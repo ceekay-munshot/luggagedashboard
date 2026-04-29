@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Luggage Discount Intelligence</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',-apple-system,sans-serif;background:#f0ede8;color:#1a1a18;-webkit-font-smoothing:antialiased;min-height:100vh}
+#app{max-width:940px;margin:0 auto;padding:24px 20px}
+button{font-family:'Inter',sans-serif;background:#fff;color:#1a1a18;border:0.5px solid rgba(26,26,24,0.22);border-radius:8px;cursor:pointer;transition:background .12s,transform .1s;font-size:13px;padding:7px 14px}
+button:hover:not(:disabled){background:#f7f6f3}
+button:active:not(:disabled){transform:scale(0.98)}
+.card{background:#fff;border:0.5px solid rgba(26,26,24,0.12);border-radius:12px;overflow:hidden}
+.card-pad{padding:14px 16px}
+.label{font-size:11px;font-weight:500;color:#9b9a96;letter-spacing:.06em;text-transform:uppercase;margin-bottom:10px;margin-top:18px}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-bottom:14px}
+.stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:6px}
+.stat-box{background:#f7f6f3;border-radius:8px;padding:10px 12px}
+.stat-box .slabel{font-size:11px;color:#9b9a96;margin-bottom:4px}
+.stat-box .sval{font-size:20px;font-weight:500}
+table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+th{padding:6px 10px;font-weight:500;color:#9b9a96;font-size:11px;border-top:0.5px solid rgba(26,26,24,0.12);border-bottom:0.5px solid rgba(26,26,24,0.12)}
+td{padding:7px 10px;border-bottom:0.5px solid rgba(26,26,24,0.08)}
+tr:hover td{cursor:pointer}
+.badge{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:500;display:inline-block}
+.divider{border:none;border-top:0.5px solid rgba(26,26,24,0.1);margin:0}
+.sku-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:0.5px solid rgba(26,26,24,0.1)}
+.sku-row:last-child{border-bottom:none}
+.bar-wrap{flex:1;height:6px;background:#f7f6f3;border-radius:3px;overflow:hidden}
+.bar-fill{height:100%;border-radius:3px}
+.platform-bar{display:flex;height:10px;border-radius:5px;overflow:hidden;margin-bottom:6px}
+.chart-wrap{position:relative;width:100%}
+.back-bar{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-bottom:16px}
+.insight-sentence{padding:12px 14px;border-radius:8px;margin-bottom:8px;border-left:3px solid rgba(26,26,24,0.12)}
+.insight-sentence:last-child{margin-bottom:0}
+.delta-badge{font-size:11px;font-weight:500;padding:2px 6px;border-radius:4px;display:inline-block}
+.risk-pill{font-size:11px;color:#A32D2D;background:#FCEBEB;padding:3px 8px;border-radius:4px;display:inline-block;margin-bottom:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(186,117,23,.5)}100%{box-shadow:0 0 0 10px rgba(186,117,23,0)}}
+@keyframes shimmer{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes fadein{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+.fadein{animation:fadein .22s ease both}
+#refresh-btn{display:flex;align-items:center;gap:8px;padding:10px 22px;font-size:14px;font-weight:500;border-radius:10px;background:#BA7517;color:#fff;border:none;letter-spacing:.02em;transition:background .15s,transform .1s,box-shadow .15s}
+#refresh-btn:hover:not(:disabled){background:#854F0B;transform:translateY(-1px);box-shadow:0 4px 12px rgba(186,117,23,.35)}
+#refresh-btn:active:not(:disabled){transform:scale(.97)}
+#refresh-btn:disabled{opacity:.7;cursor:not-allowed;animation:pulse 1.2s ease-out infinite}
+.spin{display:inline-block;animation:spin .85s linear infinite}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
+.dot.live{background:#0F6E56}
+.dot.loading{background:#BA7517;animation:shimmer 1s ease-in-out infinite}
+.box-strip{position:relative;height:20px;margin:6px 0}
+.hidden{display:none}
+.clickable{cursor:pointer;transition:background .1s}
+</style>
+</head>
+<body>
+<div id="app"><div style="text-align:center;padding:80px 0;color:#9b9a96;font-size:14px">Loading…</div></div>
+
+<script>
+// ── Colours ──────────────────────────────────────────────────────────────────
+const COL = {"VIP Group":"#BA7517","Safari Industries":"#0F6E56","Samsonite Group":"#185FA5"};
+const BG  = {"VIP Group":"#FAEEDA","Safari Industries":"#E1F5EE","Samsonite Group":"#E6F1FB"};
+const TXT = {"VIP Group":"#633806","Safari Industries":"#085041","Samsonite Group":"#0C447C"};
+
+// ── Seeded random ─────────────────────────────────────────────────────────────
+function seededRand(seed){let s=seed;return()=>{s=(s*1103515245+12345)&0x7fffffff;return s/0x7fffffff;};}
+
+// ── Generate mock SKUs ────────────────────────────────────────────────────────
+function generateData(seed){
+  const r=seededRand(seed);
+  const profiles=[
+    {brand:"VIP",               company:"VIP Group",        avg:68,spread:22},
+    {brand:"Skybags",           company:"VIP Group",        avg:73,spread:16},
+    {brand:"Carlton",           company:"VIP Group",        avg:59,spread:20},
+    {brand:"Aristocrat",        company:"VIP Group",        avg:75,spread:14},
+    {brand:"Safari",            company:"Safari Industries", avg:62,spread:18},
+    {brand:"Samsonite",         company:"Samsonite Group",  avg:37,spread:16},
+    {brand:"American Tourister",company:"Samsonite Group",  avg:53,spread:20},
+  ];
+  const pn=["Trolley Bag","Cabin Bag","Check-in","Hardside","Softside","Duffle"];
+  const skus=[];
+  profiles.forEach(({brand,company,avg,spread})=>{
+    const n=45+Math.floor(r()*15);
+    for(let i=0;i<n;i++){
+      const disc=Math.max(3,Math.min(91,avg+(r()-.5)*spread*2+(r()-.5)*8));
+      const mrp=1500+Math.floor(r()*8500);
+      skus.push({brand,company,name:`${brand} ${pn[Math.floor(r()*pn.length)]}`,discount:+disc.toFixed(1),mrp,selling:Math.round(mrp*(1-disc/100)),platform:r()>.5?"Amazon":"Flipkart",tier:mrp<2000?"<₹2k":mrp<6000?"₹2–6k":">₹6k",rating:+(3.2+r()*1.6).toFixed(1),reviews:Math.floor(r()*4800+50)});
+    }
+  });
+  return skus;
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+function calcStats(arr){
+  if(!arr.length)return{avg:0,median:0,min:0,max:0,p25:0,p75:0,count:0};
+  const s=[...arr].sort((a,b)=>a-b);
+  const avg=arr.reduce((a,v)=>a+v,0)/arr.length;
+  return{avg:+avg.toFixed(1),median:+s[Math.floor(s.length/2)].toFixed(1),min:+s[0].toFixed(1),max:+s[s.length-1].toFixed(1),p25:+s[Math.floor(s.length*.25)].toFixed(1),p75:+s[Math.floor(s.length*.75)].toFixed(1),count:arr.length};
+}
+
+function buildStats(skus){
+  const co={},br={};
+  skus.forEach(sku=>{
+    const{brand,company,discount,platform,tier}=sku;
+    if(!co[company])co[company]={discs:[],tiers:{},skus:[]};
+    co[company].discs.push(discount);co[company].skus.push(sku);
+    co[company].tiers[tier]=co[company].tiers[tier]||[];co[company].tiers[tier].push(discount);
+    if(!br[brand])br[brand]={discs:[],company,plt:{},skus:[]};
+    br[brand].discs.push(discount);br[brand].skus.push(sku);
+    br[brand].plt[platform]=(br[brand].plt[platform]||0)+1;
+  });
+  const companyStats=Object.entries(co).map(([company,{discs,tiers,skus}])=>({company,...calcStats(discs),skus,tierAvg:Object.fromEntries(Object.entries(tiers).map(([t,a])=>[t,+(a.reduce((x,v)=>x+v,0)/a.length).toFixed(1)]))})).sort((a,b)=>b.avg-a.avg);
+  const brandStats=Object.entries(br).map(([brand,{discs,company,plt,skus}])=>({brand,company,...calcStats(discs),skus,amazon:plt["Amazon"]||0,flipkart:plt["Flipkart"]||0})).sort((a,b)=>b.avg-a.avg);
+  return{companyStats,brandStats};
+}
+
+// ── HTML helpers ──────────────────────────────────────────────────────────────
+const h=(tag,attrs={},children='')=>{
+  const a=Object.entries(attrs).map(([k,v])=>`${k}="${v}"`).join(' ');
+  return `<${tag}${a?' '+a:''}>${Array.isArray(children)?children.join(''):children}</${tag}>`;
+};
+
+function pct(v,col){return `<span style="font-weight:500;color:${col}">${v}%</span>`;}
+
+function deltaBadge(v){
+  if(v===null||v===undefined)return'';
+  const big=Math.abs(v)>5,up=v>0;
+  const bg=big?(up?'#FCEBEB':'#EAF3DE'):'#f7f6f3';
+  const color=big?(up?'#A32D2D':'#3B6D11'):'#5f5e5a';
+  return `<span class="delta-badge" style="background:${bg};color:${color}">${up?'+':''}${v.toFixed(1)}pp${big?(up?' ↑':' ↓'):''}</span>`;
+}
+
+function boxStrip(p25,p75,min,max,avg,median,color){
+  return `<div class="box-strip">
+    <div style="position:absolute;left:0;right:0;top:50%;height:1.5px;background:rgba(26,26,24,0.12);transform:translateY(-50%)"></div>
+    <div style="position:absolute;left:${min}%;width:1.5px;height:10px;background:${color};top:50%;transform:translateY(-50%)"></div>
+    <div style="position:absolute;left:${max}%;width:1.5px;height:10px;background:${color};top:50%;transform:translateY(-50%)"></div>
+    <div style="position:absolute;left:${min}%;width:${max-min}%;height:1.5px;background:${color};opacity:.2;top:50%;transform:translateY(-50%)"></div>
+    <div style="position:absolute;left:${p25}%;width:${p75-p25}%;height:12px;background:${color};opacity:.35;top:50%;transform:translateY(-50%);border-radius:2px"></div>
+    <div style="position:absolute;left:${median}%;width:2px;height:16px;background:${color};top:50%;transform:translateX(-50%) translateY(-50%);border-radius:1px"></div>
+    <div style="position:absolute;left:${avg}%;width:8px;height:8px;background:${color};top:50%;transform:translateX(-50%) translateY(-50%);border-radius:50%;border:2px solid #fff"></div>
+  </div>`;
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let STATE={curr:null,history:[],insight:'',insightLoading:false,loading:false,lastRefresh:null,view:null};
+let charts={};
+
+function destroyCharts(){Object.values(charts).forEach(c=>{try{c.destroy();}catch(e){}});charts={};}
+
+// ── Chart registry (destroy before re-creating) ───────────────────────────────
+function mkChart(id,config){
+  if(charts[id])try{charts[id].destroy();}catch(e){}
+  const canvas=document.getElementById(id);
+  if(!canvas)return;
+  charts[id]=new Chart(canvas,config);
+}
+
+// ── Render insight ─────────────────────────────────────────────────────────────
+function renderInsight(text){
+  if(!text)return`<div style="color:#9b9a96;font-size:13px;padding:8px 0">Market read will appear after first refresh.</div>`;
+  const companies=[
+    {short:["VIP Group","VIP's","VIP"],         col:COL["VIP Group"],        bg:BG["VIP Group"],         txt:TXT["VIP Group"]},
+    {short:["Safari Industries","Safari's","Safari"],col:COL["Safari Industries"],bg:BG["Safari Industries"],txt:TXT["Safari Industries"]},
+    {short:["Samsonite Group","Samsonite's","Samsonite","American Tourister"],col:COL["Samsonite Group"],bg:BG["Samsonite Group"],txt:TXT["Samsonite Group"]},
+  ];
+  const clean=text.replace(/\*\*/g,'');
+  const sentences=clean.match(/[^.!?]+[.!?]+/g)||[clean];
+  return sentences.map(sentence=>{
+    let dominant=null,bestIdx=Infinity;
+    companies.forEach(c=>c.short.forEach(s=>{const idx=sentence.indexOf(s);if(idx!==-1&&idx<bestIdx){bestIdx=idx;dominant=c;}}));
+    return `<div class="insight-sentence" style="background:${dominant?dominant.bg:'#f7f6f3'};border-left-color:${dominant?dominant.col:'rgba(26,26,24,0.12)'}"><p style="margin:0;font-size:13px;line-height:1.7;color:${dominant?dominant.txt:'#1a1a18'}">${sentence.trim()}</p></div>`;
+  }).join('');
+}
+
+// ── Page: Dashboard ───────────────────────────────────────────────────────────
+function renderDashboard(){
+  const{curr,history,loading,insightLoading,insight,lastRefresh}=STATE;
+  const prev=history[history.length-2];
+  const getDelta=co=>{
+    if(!prev||!curr)return null;
+    const pv=prev.stats.companyStats.find(c=>c.company===co)?.avg;
+    const cv=curr.companyStats.find(c=>c.company===co)?.avg;
+    return pv!=null&&cv!=null?+(cv-pv).toFixed(1):null;
+  };
+  const TIERS=["<₹2k","₹2–6k",">₹6k"];
+  const topDisc=curr.companyStats[0];
+  const spread=+(curr.companyStats[0].avg-curr.companyStats[curr.companyStats.length-1].avg).toFixed(1);
+
+  // Company cards
+  const companyCards=curr.companyStats.map((c,ci)=>{
+    const col=COL[c.company],isTop=ci===0,isBottom=ci===curr.companyStats.length-1;
+    const delta=getDelta(c.company);
+    return `<div class="card clickable" data-action="company" data-company="${c.company}" style="padding:14px 16px;border-top:3px solid ${col};${isTop?`border:1.5px solid ${col};border-top:3px solid ${col}`:''}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-size:10px;color:#5f5e5a;font-weight:500;letter-spacing:.04em">${c.company.toUpperCase()}</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          ${isTop?`<span class="badge" style="background:${BG[c.company]};color:${TXT[c.company]}">Most aggressive</span>`:''}
+          ${isBottom?`<span class="badge" style="background:#EAF3DE;color:#3B6D11">Most disciplined</span>`:''}
+          <span style="font-size:10px;color:${col}">→</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px">
+        <span style="font-size:34px;font-weight:600;color:${col}">${c.avg}%</span>
+        ${delta!==null?deltaBadge(delta):''}
+      </div>
+      ${c.avg>65?`<div class="risk-pill">Margin risk zone</div>`:''}
+      ${boxStrip(c.p25,c.p75,c.min,c.max,c.avg,c.median,col)}
+      <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:11px;color:#9b9a96">
+        <span>${c.min}%</span><span>med ${c.median}%</span><span>${c.max}%</span>
+      </div>
+      <div style="margin-top:6px;font-size:11px;color:#5f5e5a">${c.count} SKUs</div>
+    </div>`;
+  });
+
+  // Company table rows
+  const coRows=curr.companyStats.map((c,i)=>`<tr class="clickable" data-action="company" data-company="${c.company}" style="background:${i%2?'#f7f6f3':'transparent'}">
+    <td style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:${COL[c.company]};flex-shrink:0"></span><span style="font-weight:500">${c.company.split(' ')[0]}</span></td>
+    <td style="text-align:right;font-weight:500;color:${COL[c.company]}">${c.avg}%</td>
+    <td style="text-align:right">${c.median}%</td>
+    <td style="text-align:right;color:#5f5e5a">${c.min}%</td>
+    <td style="text-align:right;color:#5f5e5a">${c.max}%</td>
+  </tr>`).join('');
+
+  // Brand table rows
+  const brRows=curr.brandStats.map((b,i)=>`<tr class="clickable" data-action="brand" data-brand="${b.brand}" style="background:${i%2?'#f7f6f3':'transparent'}">
+    <td style="font-weight:500">${b.brand}</td>
+    <td><span class="badge" style="background:${BG[b.company]};color:${TXT[b.company]}">${b.company.split(' ')[0]}</span></td>
+    <td style="text-align:right;font-weight:500;color:${COL[b.company]}">${b.avg}%</td>
+    <td style="text-align:right;color:#5f5e5a">${b.median}%</td>
+  </tr>`).join('');
+
+  // Tier heatmap cells
+  const tierRows=curr.companyStats.map(c=>`<tr>
+    <td style="display:flex;align-items:center;gap:6px;padding:8px"><span style="width:6px;height:6px;border-radius:50%;background:${COL[c.company]}"></span><span style="font-size:12px;font-weight:500">${c.company.split(' ')[0]}</span></td>
+    ${TIERS.map(t=>{const v=c.tierAvg?.[t]||0;const intensity=Math.min(1,v/80);const col=COL[c.company];const bgHex=v?col+Math.round(intensity*55+20).toString(16).padStart(2,'0'):'#f7f6f3';const txtColor=v?TXT[c.company]:'#9b9a96';return`<td style="text-align:center;padding:6px 8px"><div style="display:inline-block;padding:3px 8px;border-radius:5px;font-size:12px;font-weight:500;background:${bgHex};color:${txtColor}">${v?v+'%':'—'}</div></td>`;}).join('')}
+  </tr>`).join('');
+
+  // History trend rows (for display in insight header)
+  const histLabel=`${history.length} run${history.length>1?'s':''}`;
+
+  const insightHTML=insightLoading
+    ?`<div style="color:#9b9a96;font-size:13px;padding:8px 0">Generating market read…</div>`
+    :renderInsight(insight);
+
+  const html=`
+  <div class="fadein">
+    <!-- Header -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <div class="dot ${loading?'loading':'live'}"></div>
+          <span style="font-size:11px;color:#9b9a96;letter-spacing:.07em;text-transform:uppercase">${loading?'Scraping fresh data…':lastRefresh?`Last scraped ${lastRefresh.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`:'Ready'}</span>
+        </div>
+        <div style="font-size:20px;font-weight:600">Luggage Discount Intelligence</div>
+        <div style="font-size:12px;color:#9b9a96;margin-top:2px">Amazon India · Flipkart · ~320 SKUs — click any card, row or panel to drill in</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+        <div style="display:flex;gap:8px">
+          ${history.length>=2?`<button id="history-btn">History (${history.length})</button>`:''}
+          <button id="refresh-btn" ${loading?'disabled':''}>
+            <span class="${loading?'spin':''}">↻</span> ${loading?'Scraping…':'Refresh data'}
+          </button>
+        </div>
+        ${!loading&&lastRefresh?`<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9b9a96"><span style="width:5px;height:5px;border-radius:50%;background:#0F6E56;display:inline-block"></span>Numbers update on each refresh</div>`:''}
+      </div>
+    </div>
+
+    <!-- Company cards -->
+    <div class="grid3">${companyCards.join('')}</div>
+
+    <!-- Tables -->
+    <div class="grid2">
+      <div class="card">
+        <div style="padding:12px 14px 8px;font-size:11px;font-weight:500;color:#5f5e5a;letter-spacing:.05em">BY COMPANY — click a row</div>
+        <table>
+          <thead><tr><th style="text-align:left">Company</th><th style="text-align:right">Avg</th><th style="text-align:right">Med</th><th style="text-align:right">Min</th><th style="text-align:right">Max</th></tr></thead>
+          <tbody>${coRows}</tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div style="padding:12px 14px 8px;font-size:11px;font-weight:500;color:#5f5e5a;letter-spacing:.05em">BY BRAND — click a row</div>
+        <table>
+          <thead><tr><th style="text-align:left">Brand</th><th style="text-align:left">Group</th><th style="text-align:right">Avg</th><th style="text-align:right">Med</th></tr></thead>
+          <tbody>${brRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Bar chart -->
+    <div class="card card-pad" style="margin-bottom:14px">
+      <div style="font-size:11px;font-weight:500;color:#5f5e5a;margin-bottom:12px;letter-spacing:.05em">AVG DISCOUNT BY BRAND — <span style="font-weight:400;color:#9b9a96">click a bar to drill in</span></div>
+      <div class="chart-wrap" style="height:${curr.brandStats.length*42+40}px"><canvas id="bar-chart"></canvas></div>
+    </div>
+
+    <!-- Platform + Tier -->
+    <div class="grid2">
+      <div class="card card-pad clickable" data-action="platform" style="transition:border-color .12s">
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:11px;font-weight:500;color:#5f5e5a;letter-spacing:.05em">PLATFORM SHELF PRESENCE</span>
+          <span style="font-size:10px;color:#9b9a96">click to expand →</span>
+        </div>
+        <div class="chart-wrap" style="height:170px"><canvas id="platform-chart"></canvas></div>
+        <div style="display:flex;gap:12px;margin-top:6px">
+          <span style="display:flex;align-items:center;gap:4px;font-size:11px;color:#5f5e5a"><span style="width:8px;height:8px;border-radius:2px;background:#FF9900;display:inline-block"></span>Amazon</span>
+          <span style="display:flex;align-items:center;gap:4px;font-size:11px;color:#5f5e5a"><span style="width:8px;height:8px;border-radius:2px;background:#2874F0;display:inline-block"></span>Flipkart</span>
+        </div>
+      </div>
+      <div class="card card-pad clickable" data-action="tier" style="transition:border-color .12s">
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:11px;font-weight:500;color:#5f5e5a;letter-spacing:.05em">PRICE TIER HEATMAP</span>
+          <span style="font-size:10px;color:#9b9a96">click to expand →</span>
+        </div>
+        <table style="table-layout:fixed">
+          <thead><tr><th style="text-align:left"></th>${TIERS.map(t=>`<th style="text-align:center">${t}</th>`).join('')}</tr></thead>
+          <tbody>${tierRows}</tbody>
+        </table>
+        <div style="margin-top:10px;font-size:11px;color:#9b9a96">Deeper fill = more aggressive discounting at that tier</div>
+      </div>
+    </div>
+
+    <!-- History trend -->
+    ${history.length>=2?`
+    <div class="card card-pad clickable" data-action="history" style="margin-bottom:14px;transition:border-color .12s">
+      <div style="display:flex;justify-content:space-between;margin-bottom:12px">
+        <span style="font-size:11px;font-weight:500;color:#5f5e5a;letter-spacing:.05em">DISCOUNT TREND — ${history.length} RUNS</span>
+        <span style="font-size:10px;color:#9b9a96">click for full history →</span>
+      </div>
+      <div class="chart-wrap" style="height:120px"><canvas id="trend-chart"></canvas></div>
+      <div style="display:flex;gap:16px;margin-top:8px">
+        ${Object.entries(COL).map(([co,col])=>`<span style="display:flex;align-items:center;gap:4px;font-size:11px;color:#5f5e5a"><span style="width:16px;height:2px;border-radius:1px;background:${col};display:inline-block"></span>${co.split(' ')[0]}</span>`).join('')}
+      </div>
+    </div>`:''}
+
+    <!-- Market read -->
+    <div class="card" style="overflow:hidden">
+      <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;background:#f7f6f3;border-bottom:0.5px solid rgba(26,26,24,0.1)">
+        <div>
+          <div style="font-size:11px;font-weight:500;color:#9b9a96;letter-spacing:.06em;text-transform:uppercase;margin-bottom:2px">Market read</div>
+          <div style="font-size:12px;color:#5f5e5a">Based on current scrape — refreshes every time you hit the button</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:10px;flex-shrink:0">
+          <div style="background:${BG[topDisc.company]};border-radius:8px;padding:6px 12px;text-align:center">
+            <div style="font-size:10px;color:${TXT[topDisc.company]};opacity:.7;margin-bottom:2px">Highest discounter</div>
+            <div style="font-size:13px;font-weight:500;color:${TXT[topDisc.company]}">${topDisc.company.split(' ')[0]} · ${topDisc.avg}%</div>
+          </div>
+          <div style="background:#fff;border-radius:8px;padding:6px 12px;text-align:center;border:0.5px solid rgba(26,26,24,0.12)">
+            <div style="font-size:10px;color:#9b9a96;margin-bottom:2px">Gap top vs bottom</div>
+            <div style="font-size:13px;font-weight:500;color:${spread>20?'#A32D2D':'#1a1a18'}">${spread}pp</div>
+          </div>
+        </div>
+      </div>
+      <div style="padding:12px 16px;background:#fff">${insightHTML}</div>
+    </div>
+  </div>`;
+
+  destroyCharts();
+  document.getElementById('app').innerHTML=html;
+
+  // Events
+  document.getElementById('refresh-btn')?.addEventListener('click',doRefresh);
+  document.getElementById('history-btn')?.addEventListener('click',()=>navigate({type:'history'}));
+  document.querySelectorAll('[data-action]').forEach(el=>{
+    el.addEventListener('mouseenter',()=>el.style.background=BG[el.dataset.company||'']||'#f7f6f3');
+    el.addEventListener('mouseleave',()=>el.style.background='');
+    el.addEventListener('click',()=>{
+      const a=el.dataset.action;
+      if(a==='company'){const c=STATE.curr.companyStats.find(x=>x.company===el.dataset.company);if(c)navigate({type:'company',data:c,prevAvg:STATE.history[STATE.history.length-2]?.stats.companyStats.find(x=>x.company===el.dataset.company)?.avg});}
+      else if(a==='brand'){const b=STATE.curr.brandStats.find(x=>x.brand===el.dataset.brand);if(b)navigate({type:'brand',data:b});}
+      else if(a==='platform')navigate({type:'platform'});
+      else if(a==='tier')navigate({type:'tier'});
+      else if(a==='history')navigate({type:'history'});
+    });
+  });
+
+  // Charts
+  setTimeout(()=>{
+    // Bar chart
+    mkChart('bar-chart',{type:'bar',data:{labels:curr.brandStats.map(b=>b.brand),datasets:[{data:curr.brandStats.map(b=>b.avg),backgroundColor:curr.brandStats.map(b=>COL[b.company]),borderRadius:3,borderSkipped:'left'}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${c.raw}% avg discount`}}},scales:{x:{max:90,grid:{display:true,color:'rgba(26,26,24,0.06)'},ticks:{callback:v=>`${v}%`,font:{size:10},color:'#9b9a96'}},y:{grid:{display:false},ticks:{font:{size:11},color:'#1a1a18'}}},onClick:(e,el)=>{if(el[0]){const b=curr.brandStats[el[0].index];navigate({type:'brand',data:b});}}}});
+
+    // Platform chart
+    mkChart('platform-chart',{type:'bar',data:{labels:curr.brandStats.map(b=>b.brand.split(' ')[0]),datasets:[{label:'Amazon',data:curr.brandStats.map(b=>b.amazon),backgroundColor:'#FF9900',stack:'a'},{label:'Flipkart',data:curr.brandStats.map(b=>b.flipkart),backgroundColor:'#2874F0',stack:'a',borderRadius:{topLeft:3,topRight:3}}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false}},scales:{x:{grid:{display:false},ticks:{font:{size:10},color:'#9b9a96',maxRotation:30}},y:{grid:{color:'rgba(26,26,24,0.06)'},ticks:{font:{size:10},color:'#9b9a96'}}}}});
+
+    // Trend chart
+    if(history.length>=2){
+      const histData=history.map(h=>({label:h.label,vip:h.vip,safari:h.safari,sam:h.sam}));
+      mkChart('trend-chart',{type:'line',data:{labels:histData.map(h=>h.label),datasets:[{label:'VIP Group',data:histData.map(h=>h.vip),borderColor:COL["VIP Group"],backgroundColor:'transparent',borderWidth:2,pointRadius:3,pointBackgroundColor:COL["VIP Group"]},{label:'Safari Industries',data:histData.map(h=>h.safari),borderColor:COL["Safari Industries"],backgroundColor:'transparent',borderWidth:2,pointRadius:3,pointBackgroundColor:COL["Safari Industries"]},{label:'Samsonite Group',data:histData.map(h=>h.sam),borderColor:COL["Samsonite Group"],backgroundColor:'transparent',borderWidth:2,pointRadius:3,pointBackgroundColor:COL["Samsonite Group"]}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false}},scales:{x:{grid:{display:false},ticks:{font:{size:10},color:'#9b9a96'}},y:{min:30,max:85,grid:{color:'rgba(26,26,24,0.06)'},ticks:{callback:v=>`${v}%`,font:{size:10},color:'#9b9a96'}}}}});
+    }
+  },50);
+}
+
+// ── Page: Company detail ──────────────────────────────────────────────────────
+function renderCompany(c,prevAvg){
+  const col=COL[c.company];
+  const delta=prevAvg!=null?+(c.avg-prevAvg).toFixed(1):null;
+  const brands=c.skus.reduce((a,s)=>{a[s.brand]=a[s.brand]||[];a[s.brand].push(s.discount);return a;},{});
+  const brandRows=Object.entries(brands).map(([b,d])=>({b,avg:+(d.reduce((a,v)=>a+v,0)/d.length).toFixed(1),count:d.length})).sort((a,b)=>b.avg-a.avg);
+  const topSkus=[...c.skus].sort((a,b)=>b.discount-a.discount).slice(0,12);
+  const buckets=Array.from({length:9},(_,i)=>({label:`${i*10}–${i*10+10}`,count:c.skus.filter(s=>s.discount>=i*10&&s.discount<i*10+10).length}));
+
+  const html=`<div class="fadein">
+    <div class="back-bar" style="border-bottom:2px solid ${col}">
+      <button id="back-btn">← Back</button>
+      <span style="font-size:17px;font-weight:500">${c.company}</span>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="slabel">Avg discount</div><div class="sval" style="color:${col}">${c.avg}%</div></div>
+      <div class="stat-box"><div class="slabel">Median</div><div class="sval" style="color:${col}">${c.median}%</div></div>
+      <div class="stat-box"><div class="slabel">Range</div><div class="sval">${c.min}–${c.max}%</div></div>
+      <div class="stat-box"><div class="slabel">SKUs tracked</div><div class="sval">${c.count}</div></div>
+    </div>
+    ${delta!==null?`<div style="margin:12px 0;padding:8px 14px;border-radius:8px;background:${Math.abs(delta)>5?(delta>0?'#FCEBEB':'#EAF3DE'):'#f7f6f3'};font-size:13px;display:flex;align-items:center;gap:10px"><span style="color:#5f5e5a">vs previous run:</span>${deltaBadge(delta)}${Math.abs(delta)>5?`<span style="color:#5f5e5a;font-size:12px">— significant move</span>`:''}</div>`:''}
+    <div class="label">Discount distribution</div>
+    <div class="chart-wrap" style="height:130px"><canvas id="dist-chart"></canvas></div>
+    <div class="label">Brands within group</div>
+    ${brandRows.map(({b,avg,count})=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="font-size:13px;width:120px;flex-shrink:0">${b}</span><div class="bar-wrap"><div class="bar-fill" style="width:${avg}%;background:${col}"></div></div><span style="font-size:13px;font-weight:500;color:${col};width:40px;text-align:right">${avg}%</span><span style="font-size:11px;color:#9b9a96;width:44px;text-align:right">${count} SKUs</span></div>`).join('')}
+    <div class="label">Top discounted SKUs</div>
+    ${topSkus.map(s=>`<div class="sku-row"><div><div style="font-size:13px;font-weight:500">${s.name}</div><div style="font-size:11px;color:#9b9a96;margin-top:2px">MRP ₹${s.mrp.toLocaleString()} · ${s.platform} · ${s.tier} · ★ ${s.rating} (${s.reviews.toLocaleString()})</div></div><div style="text-align:right;flex-shrink:0;margin-left:12px"><div style="font-size:14px;font-weight:500;color:${col}">${s.discount}%</div><div style="font-size:11px;color:#5f5e5a">₹${s.selling.toLocaleString()}</div></div></div>`).join('')}
+  </div>`;
+
+  destroyCharts();
+  document.getElementById('app').innerHTML=html;
+  document.getElementById('back-btn').addEventListener('click',()=>{STATE.view=null;renderDashboard();});
+  setTimeout(()=>{
+    mkChart('dist-chart',{type:'bar',data:{labels:buckets.map(b=>b.label),datasets:[{data:buckets.map(b=>b.count),backgroundColor:col+'bb',borderRadius:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${c.raw} SKUs`}}},scales:{x:{grid:{display:false},ticks:{font:{size:10},color:'#9b9a96',maxRotation:30}},y:{grid:{color:'rgba(26,26,24,0.06)'},ticks:{font:{size:10},color:'#9b9a96'}}}}});
+  },50);
+}
+
+// ── Page: Brand detail ────────────────────────────────────────────────────────
+function renderBrand(b){
+  const col=COL[b.company];
+  const tiers=b.skus.reduce((a,s)=>{a[s.tier]=a[s.tier]||[];a[s.tier].push(s.discount);return a;},{});
+  const tierRows=["<₹2k","₹2–6k",">₹6k"].map(t=>({tier:t,avg:tiers[t]?+(tiers[t].reduce((a,v)=>a+v,0)/tiers[t].length).toFixed(1):0,count:tiers[t]?.length||0}));
+  const topSkus=[...b.skus].sort((a,z)=>z.discount-a.discount).slice(0,12);
+  const total=b.amazon+b.flipkart,amzPct=total?Math.round((b.amazon/total)*100):0;
+  const scatterData=b.skus.map(s=>({x:s.mrp,y:+s.discount.toFixed(1)}));
+
+  const html=`<div class="fadein">
+    <div class="back-bar" style="border-bottom:2px solid ${col}">
+      <button id="back-btn">← Back</button>
+      <span style="font-size:17px;font-weight:500">${b.brand}</span>
+    </div>
+    <div style="margin-bottom:12px"><span class="badge" style="background:${BG[b.company]};color:${TXT[b.company]}">${b.company}</span></div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="slabel">Avg discount</div><div class="sval" style="color:${col}">${b.avg}%</div></div>
+      <div class="stat-box"><div class="slabel">Median</div><div class="sval" style="color:${col}">${b.median}%</div></div>
+      <div class="stat-box"><div class="slabel">Amazon SKUs</div><div class="sval">${b.amazon}</div></div>
+      <div class="stat-box"><div class="slabel">Flipkart SKUs</div><div class="sval">${b.flipkart}</div></div>
+    </div>
+    <div class="label">Platform split</div>
+    <div class="platform-bar"><div style="width:${amzPct}%;background:#FF9900"></div><div style="width:${100-amzPct}%;background:#2874F0"></div></div>
+    <div style="display:flex;gap:16px;font-size:12px;color:#5f5e5a;margin-bottom:4px"><span><span style="color:#FF9900;font-weight:500">Amazon</span> ${b.amazon} (${amzPct}%)</span><span><span style="color:#2874F0;font-weight:500">Flipkart</span> ${b.flipkart} (${100-amzPct}%)</span></div>
+    <div class="label">Discount by price tier</div>
+    ${tierRows.map(({tier,avg,count})=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="font-size:13px;width:52px;flex-shrink:0">${tier}</span><div class="bar-wrap"><div class="bar-fill" style="width:${avg}%;background:${col}"></div></div><span style="font-size:13px;font-weight:500;color:${col};width:40px;text-align:right">${avg?avg+'%':'—'}</span><span style="font-size:11px;color:#9b9a96;width:36px;text-align:right">${count} SKUs</span></div>`).join('')}
+    <div class="label">MRP vs discount — each dot is one SKU</div>
+    <div class="chart-wrap" style="height:180px"><canvas id="scatter-chart"></canvas></div>
+    <div class="label">All SKUs — sorted by discount</div>
+    ${topSkus.map(s=>`<div class="sku-row"><div><div style="font-size:13px;font-weight:500">${s.name}</div><div style="font-size:11px;color:#9b9a96;margin-top:2px">${s.tier} · ${s.platform} · ★ ${s.rating} (${s.reviews.toLocaleString()})</div></div><div style="text-align:right;flex-shrink:0;margin-left:12px"><div style="font-size:14px;font-weight:500;color:${col}">${s.discount}%</div><div style="font-size:11px;color:#5f5e5a">₹${s.selling.toLocaleString()} <span style="text-decoration:line-through;color:#9b9a96">₹${s.mrp.toLocaleString()}</span></div></div></div>`).join('')}
+  </div>`;
+
+  destroyCharts();
+  document.getElementById('app').innerHTML=html;
+  document.getElementById('back-btn').addEventListener('click',()=>{STATE.view=null;renderDashboard();});
+  setTimeout(()=>{
+    mkChart('scatter-chart',{type:'scatter',data:{datasets:[{data:scatterData,backgroundColor:col+'88',pointRadius:5,pointHoverRadius:7}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`MRP ₹${c.parsed.x.toLocaleString()} · ${c.parsed.y}% off`}}},scales:{x:{min:0,max:12000,grid:{color:'rgba(26,26,24,0.06)'},ticks:{callback:v=>`₹${(v/1000).toFixed(0)}k`,font:{size:10},color:'#9b9a96'},title:{display:true,text:'MRP (₹)',font:{size:11},color:'#9b9a96'}},y:{grid:{color:'rgba(26,26,24,0.06)'},ticks:{callback:v=>`${v}%`,font:{size:10},color:'#9b9a96'}}}}});
+  },50);
+}
+
+// ── Page: Tier detail ─────────────────────────────────────────────────────────
+function renderTier(){
+  const TIERS=["<₹2k","₹2–6k",">₹6k"];
+  const html=`<div class="fadein">
+    <div class="back-bar" style="border-bottom:2px solid #888"><button id="back-btn">← Back</button><span style="font-size:17px;font-weight:500">Price tier breakdown</span></div>
+    <p style="font-size:13px;color:#5f5e5a;margin-bottom:20px;line-height:1.6">Average discount % per company at each price tier.</p>
+    ${TIERS.map(tier=>`
+      <div style="margin-bottom:28px">
+        <div style="font-size:13px;font-weight:500;margin-bottom:12px;padding-bottom:8px;border-bottom:0.5px solid rgba(26,26,24,0.12)">${tier}</div>
+        ${STATE.curr.companyStats.map(c=>{const v=c.tierAvg?.[tier]||0;return`<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><span style="font-size:13px;width:100px;flex-shrink:0">${c.company.split(' ')[0]}</span><div class="bar-wrap" style="height:8px"><div class="bar-fill" style="width:${v}%;background:${COL[c.company]};height:100%"></div></div><span style="font-size:13px;font-weight:500;color:${COL[c.company]};width:40px;text-align:right">${v?v+'%':'—'}</span></div>`;}).join('')}
+      </div>`).join('')}
+  </div>`;
+  destroyCharts();
+  document.getElementById('app').innerHTML=html;
+  document.getElementById('back-btn').addEventListener('click',()=>{STATE.view=null;renderDashboard();});
+}
+
+// ── Page: Platform detail ─────────────────────────────────────────────────────
+function renderPlatform(){
+  const html=`<div class="fadein">
+    <div class="back-bar" style="border-bottom:2px solid #888"><button id="back-btn">← Back</button><span style="font-size:17px;font-weight:500">Platform shelf presence</span></div>
+    <p style="font-size:13px;color:#5f5e5a;margin-bottom:20px;line-height:1.6">SKU count per brand per platform — proxy for promotional intensity and shelf presence.</p>
+    ${STATE.curr.brandStats.map(b=>{const total=b.amazon+b.flipkart,amzPct=total?Math.round((b.amazon/total)*100):0;return`<div style="margin-bottom:20px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;font-weight:500">${b.brand}</span><span class="badge" style="background:${BG[b.company]};color:${TXT[b.company]}">${b.company.split(' ')[0]}</span></div><span style="font-size:12px;color:#9b9a96">${total} total SKUs</span></div><div class="platform-bar"><div style="width:${amzPct}%;background:#FF9900"></div><div style="width:${100-amzPct}%;background:#2874F0"></div></div><div style="display:flex;gap:16px;font-size:12px;color:#5f5e5a"><span><span style="color:#FF9900;font-weight:500">Amazon</span> ${b.amazon} (${amzPct}%)</span><span><span style="color:#2874F0;font-weight:500">Flipkart</span> ${b.flipkart} (${100-amzPct}%)</span></div></div>`;}).join('')}
+  </div>`;
+  destroyCharts();
+  document.getElementById('app').innerHTML=html;
+  document.getElementById('back-btn').addEventListener('click',()=>{STATE.view=null;renderDashboard();});
+}
+
+// ── Page: History detail ──────────────────────────────────────────────────────
+function renderHistory(){
+  const rows=[...STATE.history].reverse().map((h,i)=>{
+    const prev=[...STATE.history].reverse()[i+1];
+    return`<tr style="border-bottom:0.5px solid rgba(26,26,24,0.08)"><td style="padding:10px;color:#5f5e5a;font-size:12px">${h.label}${i===0?`<span class="badge" style="background:#e6f1fb;color:#0c447c;margin-left:6px">latest</span>`:''}</td>${[["VIP Group",COL["VIP Group"]],["Safari Industries",COL["Safari Industries"]],["Samsonite Group",COL["Samsonite Group"]]].map(([co,color])=>{const curr=h.stats.companyStats.find(c=>c.company===co)?.avg;const pv=prev?.stats.companyStats.find(c=>c.company===co)?.avg;const d=pv!=null&&curr!=null?+(curr-pv).toFixed(1):null;return`<td style="padding:10px;text-align:right"><span style="font-weight:500;color:${color}">${curr}%</span>${d!==null?`<span style="font-size:10px;margin-left:6px;color:${Math.abs(d)>5?(d>0?'#A32D2D':'#3B6D11'):'#9b9a96'}">${d>0?'+':''}${d}</span>`:''}</td>`;}).join('')}</tr>`;
+  }).join('');
+  const html=`<div class="fadein">
+    <div class="back-bar" style="border-bottom:2px solid #888"><button id="back-btn">← Back</button><span style="font-size:17px;font-weight:500">Run history — ${STATE.history.length} snapshots</span></div>
+    <p style="font-size:13px;color:#5f5e5a;margin-bottom:20px;line-height:1.6">Every Refresh adds a new row. Moves above 5pp are flagged. Most recent at the top.</p>
+    <table style="table-layout:fixed">
+      <thead><tr style="border-bottom:0.5px solid rgba(26,26,24,0.22)">
+        <th style="text-align:left;width:22%">Time</th>
+        <th style="text-align:right;color:${COL["VIP Group"]}">VIP</th>
+        <th style="text-align:right;color:${COL["Safari Industries"]}">Safari</th>
+        <th style="text-align:right;color:${COL["Samsonite Group"]}">Samsonite</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+  destroyCharts();
+  document.getElementById('app').innerHTML=html;
+  document.getElementById('back-btn').addEventListener('click',()=>{STATE.view=null;renderDashboard();});
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function navigate(view){
+  STATE.view=view;
+  window.scrollTo(0,0);
+  if(!view){renderDashboard();return;}
+  if(view.type==='company')renderCompany(view.data,view.prevAvg);
+  else if(view.type==='brand')renderBrand(view.data);
+  else if(view.type==='tier')renderTier();
+  else if(view.type==='platform')renderPlatform();
+  else if(view.type==='history')renderHistory();
+}
+
+// ── Refresh ───────────────────────────────────────────────────────────────────
+async function doRefresh(){
+  STATE.loading=true; STATE.insight=''; STATE.view=null;
+  renderDashboard();
+  await new Promise(r=>setTimeout(r,800));
+  const seed=Date.now()%99999;
+  const s=buildStats(generateData(seed));
+  const now=new Date();
+  const snap={ts:now,label:now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),stats:s,vip:s.companyStats.find(c=>c.company==='VIP Group')?.avg,safari:s.companyStats.find(c=>c.company==='Safari Industries')?.avg,sam:s.companyStats.find(c=>c.company==='Samsonite Group')?.avg};
+  STATE.history=[...STATE.history.slice(-9),snap];
+  STATE.curr=s; STATE.lastRefresh=now; STATE.loading=false;
+  renderDashboard();
+
+  STATE.insightLoading=true;
+  try{
+    const table=s.companyStats.map(c=>`${c.company}: Avg ${c.avg}%, Median ${c.median}%, Range ${c.min}–${c.max}%`).join('\n');
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':'YOUR_ANTHROPIC_API_KEY_HERE','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:150,system:'You are a retail analyst covering Indian consumer brands. Be direct and concise.',messages:[{role:'user',content:`Discount data across Indian luggage groups:\n\n${table}\n\nIn exactly 3 sentences, what does this signal about each company's pricing strategy and near-term margin outlook?`}]}),
+    });
+    const d=await res.json();
+    STATE.insight=d.content?.[0]?.text||'No insight returned.';
+  }catch{STATE.insight='Market read unavailable — add your Anthropic API key to the HTML file.';}
+  STATE.insightLoading=false;
+  renderDashboard();
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+doRefresh();
+</script>
+</body>
+</html>
