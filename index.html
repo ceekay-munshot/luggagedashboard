@@ -1461,10 +1461,53 @@ function renderHistory() {
 const COMPANY_ORDER = ['VIP Group','Safari Industries','Samsonite Group','HRX','Uppercase','Nasher Miles'];
 
 // ── Classification: core logic (pure function, takes one margin record + live avg) ──
+//
+// Decision framework — two primary axes:
+//
+//   1. Discount intensity  (live discount off MRP)
+//        heavy     >= 50%
+//        moderate  30–50%
+//        light     < 30%
+//
+//   2. Margin direction    (oldest vs newest gross margin in the trend)
+//        compressing  >= +3 pts drop  (newest < oldest by 3+ pts)
+//        stable       within ±3 pts
+//        expanding    >= +3 pts gain
+//
+//   Modifier — profit health (revenue growth + EBITDA):
+//        severe   EBITDA negative AND revenue declining
+//        healthy  revenue growing >10% AND EBITDA positive
+//        mixed    everything else
+//
+// The 8 signals come from this matrix:
+//
+//                | Compressing                        | Stable             | Expanding
+//   Heavy disc.  | severe → 🔻 Liquidation            | 📣 Marketing Tactic | 💪 Pricing Power
+//                | healthy → 📈 Growth Push           |                    |
+//                | mixed → 🟠 Margin Distress         |                    |
+//   Moderate     | ⚠️ Margin Watch                    | ⚖️ Selective Promoter | ⚖️ Selective Promoter
+//   Light        | ⚖️ Selective Promoter (rare)       | 🏆 Premium Hold (if GM≥55) / ⚖️ Selective | 🏆 Premium Hold / ⚖️ Selective
+//
 function classifyMargin(m, liveDiscount) {
   const qMargins = (() => { try { return JSON.parse(m.quarterlyGrossMargins || '[]'); } catch(e) { return []; } })();
-  const marginCompressing = qMargins.length >= 2 && (qMargins[qMargins.length-1].gm < qMargins[0].gm);
-  const compressionPts    = qMargins.length >= 2 ? qMargins[0].gm - qMargins[qMargins.length-1].gm : 0;
+  const compressionPts = qMargins.length >= 2 ? +(qMargins[0].gm - qMargins[qMargins.length-1].gm).toFixed(1) : 0;
+
+  // Margin direction (≥3 pts threshold to count as a real move, not noise)
+  const marginDirection = qMargins.length < 2 ? 'unknown'
+    : compressionPts >=  3 ? 'compressing'
+    : compressionPts <= -3 ? 'expanding'
+    : 'stable';
+
+  // Discount intensity
+  const discountBand = liveDiscount == null ? 'unknown'
+    : liveDiscount >= 50 ? 'heavy'
+    : liveDiscount >= 30 ? 'moderate'
+    : 'light';
+
+  // Profit-health modifier (refines the heavy+compressing cell)
+  const profitHealth = (m.ebitdaMargin < 0 && m.revenueGrowth <= 0) ? 'severe'
+    : (m.revenueGrowth > 10 && m.ebitdaMargin > 0)               ? 'healthy'
+    : 'mixed';
 
   let signal, signalColor, signalBg, interpretation, actionNote;
 
@@ -1472,33 +1515,54 @@ function classifyMargin(m, liveDiscount) {
     signal = '⚪ No Live Data'; signalColor = '#9b9a96'; signalBg = '#f7f6f3';
     interpretation = 'Run a refresh from the dashboard to fetch live discount data. Margin data from filings is always available below.';
     actionNote = 'Fetch live data first to unlock the full analysis.';
-  } else if (m.ebitdaMargin < 0 && liveDiscount >= 65 && marginCompressing) {
+  }
+  // ── HEAVY DISCOUNT × COMPRESSING MARGIN — split by profit health ──
+  else if (discountBand === 'heavy' && marginDirection === 'compressing' && profitHealth === 'severe') {
     signal = '🔻 Liquidation Signal'; signalColor = '#991b1b'; signalBg = '#FEE2E2';
-    interpretation = `Gross margins have compressed ${compressionPts} points while discounts run at ${liveDiscount}%. EBITDA is negative (${m.ebitdaMargin}%). Discounting is actively destroying margin — this is a distress-driven clearance, not a marketing tactic.`;
-    actionNote = 'Flag for further diligence. Inventory liquidation likely. Revenue decline confirms demand weakness.';
-  } else if (liveDiscount >= 55 && marginCompressing && m.revenueGrowth <= 0) {
-    signal = '🟠 Margin Distress'; signalColor = '#c05621'; signalBg = '#FFFAF0';
-    interpretation = `Deep discounting (${liveDiscount}%) alongside gross margin compression (${Math.abs(compressionPts)} pts) and stagnant/declining revenue is a structural warning sign. Discounting is not generating volume recovery.`;
-    actionNote = 'Watch for further deterioration. Exit-channel strategy may be underway.';
-  } else if (liveDiscount >= 50 && m.grossMargin >= 45 && m.revenueGrowth > 10 && marginCompressing) {
+    interpretation = `Heavy discounting (${liveDiscount}% off MRP) AND gross margins compressed ${compressionPts} pts AND revenue declining (${m.revenueGrowth}% YoY) AND EBITDA negative (${m.ebitdaMargin}%). The discount is consuming real margin — distress-driven clearance, not a marketing tactic.`;
+    actionNote = 'Flag for further diligence. Inventory liquidation likely. Demand weakness confirmed by revenue decline.';
+  }
+  else if (discountBand === 'heavy' && marginDirection === 'compressing' && profitHealth === 'healthy') {
     signal = '📈 Growth Push'; signalColor = '#5b21b6'; signalBg = '#F3E8FF';
-    interpretation = `Discounting (${liveDiscount}%) is fuelling strong revenue growth (${m.revenueGrowth}% YoY). Gross margins are compressing slightly (-${compressionPts} pts) as a deliberate investment in market share. Classic growth-phase playbook.`;
-    actionNote = 'Healthy if trajectory leads to breakeven. Monitor for inflection point where discounting normalises.';
-  } else if (liveDiscount >= 50 && m.grossMargin >= 45 && !marginCompressing) {
+    interpretation = `Heavy discounting (${liveDiscount}%) is fuelling strong revenue growth (${m.revenueGrowth}% YoY). Gross margins are compressing -${compressionPts} pts as a deliberate investment in market share. Classic growth-phase playbook — accept margin compression now to capture topline.`;
+    actionNote = 'Healthy if trajectory leads to breakeven. Watch for the inflection point where discounting normalises.';
+  }
+  else if (discountBand === 'heavy' && marginDirection === 'compressing') {
+    signal = '🟠 Margin Distress'; signalColor = '#c05621'; signalBg = '#FFFAF0';
+    interpretation = `Heavy discounting (${liveDiscount}%) AND gross margin compression (${compressionPts} pts) over ${qMargins.length} periods. Revenue ${m.revenueGrowth >= 0 ? '+' + m.revenueGrowth : m.revenueGrowth}% YoY — discounting is not generating volume recovery. The discount is eating into real margin.`;
+    actionNote = 'Watch for further deterioration. If margins keep compressing or EBITDA flips negative, this escalates to a liquidation signal.';
+  }
+  // ── HEAVY DISCOUNT × STABLE MARGIN — the textbook marketing tactic ──
+  else if (discountBand === 'heavy' && marginDirection === 'stable') {
     signal = '📣 Marketing Tactic'; signalColor = '#1a5c42'; signalBg = '#E1F5EE';
-    interpretation = `High online discounting (${liveDiscount}%) but gross margins remain stable at ${m.grossMargin}%. The brand is using elevated MRPs as an anchor, then discounting to drive e-commerce velocity. Margin is intact — this is deliberate channel strategy, not distress.`;
+    interpretation = `Heavy discounting (${liveDiscount}% off MRP) BUT gross margins steady at ${m.grossMargin}% over ${qMargins.length} periods (no material compression). The brand sets elevated MRPs as anchors then discounts to drive e-commerce velocity — margin is intact. Deliberate channel strategy, not distress.`;
     actionNote = 'No margin concern currently. Monitor whether discounting accelerates or if gross margins begin slipping.';
-  } else if (liveDiscount <= 45 && m.grossMargin >= 55 && !marginCompressing) {
+  }
+  // ── HEAVY DISCOUNT × EXPANDING MARGIN — exceptional ──
+  else if (discountBand === 'heavy' && marginDirection === 'expanding') {
+    signal = '💪 Pricing Power'; signalColor = '#0F6E56'; signalBg = '#D5EFE6';
+    interpretation = `Heavy discounting (${liveDiscount}%) AND gross margins expanding +${Math.abs(compressionPts)} pts. The brand is improving cost structure faster than discounting can erode it — exceptional pricing power and operating leverage.`;
+    actionNote = 'Strongest position. Discounting is purely promotional, not margin-destructive.';
+  }
+  // ── MODERATE DISCOUNT × COMPRESSING MARGIN ──
+  else if (discountBand === 'moderate' && marginDirection === 'compressing') {
+    signal = '⚠️ Margin Watch'; signalColor = '#b45309'; signalBg = '#FEF3C7';
+    interpretation = `Moderate discounting (${liveDiscount}%) AND gross margin compression (${compressionPts} pts). ${m.grossMargin < 45 ? 'Gross margin already thin at ' + m.grossMargin + '% — limited buffer.' : 'Margin still healthy at ' + m.grossMargin + '% but the trend is the wrong direction.'} If discounting deepens, this escalates to distress.`;
+    actionNote = 'Elevated watch. Track next quarter’s margin print and any change in discount intensity.';
+  }
+  // ── LIGHT DISCOUNT × HIGH-GM × NOT COMPRESSING — premium hold ──
+  else if (discountBand === 'light' && m.grossMargin >= 55 && marginDirection !== 'compressing') {
     signal = '🏆 Premium Hold'; signalColor = '#2a6011'; signalBg = '#EAF3DE';
-    interpretation = `Low-moderate discounting (${liveDiscount}%) with gross margins at ${m.grossMargin}% — well above sector. Premium positioning intact.`;
+    interpretation = `Low discounting (${liveDiscount}%) with gross margins at ${m.grossMargin}% — well above sector. Premium positioning intact, pricing power preserved.`;
     actionNote = 'Strongest margin position in the sector. Pricing power intact.';
-  } else if (m.grossMargin < 45 && liveDiscount >= 60) {
-    signal = '⚠️ Headroom Warning'; signalColor = '#b45309'; signalBg = '#FEF3C7';
-    interpretation = `Gross margin (${m.grossMargin}%) is relatively thin while discounts run at ${liveDiscount}%. The gap between gross margin and discount level is dangerously narrow.`;
-    actionNote = `Elevated watch. If gross margins slip further, the brand risks negative cash contribution on discounted items.`;
-  } else {
+  }
+  // ── EVERYTHING ELSE — moderate / light with stable or expanding margins ──
+  else {
     signal = '⚖️ Selective Promoter'; signalColor = '#7a4a00'; signalBg = '#FFF7E6';
-    interpretation = `Moderate discounting (${liveDiscount != null ? liveDiscount : '—'}%) with reasonable gross margins (${m.grossMargin}%). Targeted promotional activity without a systemic margin problem.`;
+    const trendNote = marginDirection === 'expanding' ? `expanding +${Math.abs(compressionPts)} pts`
+                    : marginDirection === 'compressing' ? `compressing -${compressionPts} pts (driver other than discounting)`
+                    : 'stable';
+    interpretation = `${discountBand === 'light' ? 'Low' : 'Moderate'} discounting (${liveDiscount}%) with gross margins ${trendNote} at ${m.grossMargin}%. Targeted promotional activity without a systemic margin problem.`;
     actionNote = 'Stable positioning. Not a red flag, but monitor for escalation.';
   }
 
@@ -1884,7 +1948,40 @@ function renderMarginIntel(useCached = false) {
     <div class="card card-pad" style="border-left:3px solid #185FA5;margin-bottom:8px">
       <div style="font-size:11px;font-weight:700;color:#0C447C;letter-spacing:.07em;text-transform:uppercase;margin-bottom:10px">📌 Methodology & Caveats</div>
       <div style="font-size:12px;color:#5f5e5a;line-height:1.9">
-        <strong>Marketing Tactic vs. Liquidation Signal:</strong> If a brand discounts heavily online but gross margins remain stable quarter-on-quarter, the discounting is a deliberate e-commerce channel strategy — anchor MRPs are set high, then discounted to appear competitive. If gross margins are simultaneously compressing while discounts run deep and revenue is declining, the discount is consuming real margin — a distress or liquidation signal.<br>
+        <strong>Signal framework — discount × margin direction:</strong> A signal is the intersection of two axes. Heavy discounting <em>while gross margins are compressing</em> means the discount is consuming real margin → distress or liquidation. Heavy discounting <em>while gross margins are stable</em> means the brand is using elevated MRPs as anchors and discounting for e-commerce velocity → marketing tactic. The decision matrix the dashboard uses:
+        <div style="margin:8px 0 4px;overflow-x:auto">
+          <table style="border-collapse:collapse;font-size:11px;line-height:1.5;min-width:560px">
+            <thead>
+              <tr style="background:#f7f6f3">
+                <th style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15);text-align:left">&nbsp;</th>
+                <th style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)">Margin compressing<br><span style="font-weight:400;color:#9b9a96">(≥3 pts drop over trend)</span></th>
+                <th style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)">Margin stable<br><span style="font-weight:400;color:#9b9a96">(±3 pts)</span></th>
+                <th style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)">Margin expanding<br><span style="font-weight:400;color:#9b9a96">(≥3 pts gain)</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15);background:#f7f6f3;text-align:left">Heavy discount<br><span style="font-weight:400;color:#9b9a96">(≥50%)</span></th>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#991b1b;font-weight:600">🔻 Liquidation</span> (rev↓ + EBITDA&lt;0) <br><span style="color:#5b21b6;font-weight:600">📈 Growth Push</span> (rev growing &gt;10%) <br><span style="color:#c05621;font-weight:600">🟠 Distress</span> (otherwise)</td>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#1a5c42;font-weight:600">📣 Marketing Tactic</span></td>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#0F6E56;font-weight:600">💪 Pricing Power</span></td>
+              </tr>
+              <tr>
+                <th style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15);background:#f7f6f3;text-align:left">Moderate<br><span style="font-weight:400;color:#9b9a96">(30–50%)</span></th>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#b45309;font-weight:600">⚠️ Margin Watch</span></td>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#7a4a00;font-weight:600">⚖️ Selective Promoter</span></td>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#7a4a00;font-weight:600">⚖️ Selective Promoter</span></td>
+              </tr>
+              <tr>
+                <th style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15);background:#f7f6f3;text-align:left">Light<br><span style="font-weight:400;color:#9b9a96">(&lt;30%)</span></th>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#7a4a00;font-weight:600">⚖️ Selective Promoter</span></td>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#2a6011;font-weight:600">🏆 Premium Hold</span> (GM≥55%) <br><span style="color:#7a4a00;font-weight:600">⚖️ Selective</span> (otherwise)</td>
+                <td style="padding:6px 9px;border:0.5px solid rgba(26,26,24,0.15)"><span style="color:#2a6011;font-weight:600">🏆 Premium Hold</span> / <span style="color:#7a4a00;font-weight:600">⚖️ Selective</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <span style="font-size:11px;color:#9b9a96">Margin direction is read from the full quarterly / annual trend stored on the card (oldest vs newest). A 3-pt threshold filters out noise.</span><br>
         <strong>Gross Margin:</strong> (Revenue − Cost of Goods Sold) ÷ Revenue. Does not include SG&amp;A, distribution, or marketing.<br>
         <strong>EBITDA Margin:</strong> Closest proxy to operating cash profitability.<br>
         <strong>Realized GM (vs MRP):</strong> Gross margin is reported on net sales (post-discount); the live discount is off MRP — different denominators, so a raw subtraction is meaningless. We instead convert gross margin onto the MRP base: <code style="background:#f7f6f3;padding:1px 5px;border-radius:3px">Realized GM = GM × (1 − discount)</code>. This is the gross profit the brand keeps per ₹100 of headline MRP. Worked example: GM 60% on net sales × 50% live discount → 60% × 50% = <strong>30% of MRP</strong> retained as gross profit. Thresholds: ≥30% strong, ≥20% healthy, ≥12% watch, ≥6% thin, &lt;6% danger (likely loss-making once channel fees, returns, and SG&amp;A are layered on).<br>
