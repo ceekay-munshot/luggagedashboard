@@ -1,0 +1,10 @@
+{
+  "name": "luggagedashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "npx wrangler deploy",
+    "preview": "npx wrangler versions upload",
+    "dev": "npx wrangler dev"
+  }
+}
