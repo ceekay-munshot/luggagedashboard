@@ -1502,27 +1502,34 @@ function classifyMargin(m, liveDiscount) {
     actionNote = 'Stable positioning. Not a red flag, but monitor for escalation.';
   }
 
-  const headroom     = liveDiscount != null ? Math.round((m.grossMargin - liveDiscount) * 10) / 10 : null;
-  const headroomLabel = headroom == null ? '—'
-    : headroom > 20 ? `+${headroom} pts (comfortable)`
-    : headroom > 5  ? `+${headroom} pts (watch)`
-    : headroom > 0  ? `+${headroom} pts (thin)`
-    : `${headroom} pts (danger)`;
-  const headroomColor = headroom == null ? '#9b9a96'
-    : headroom > 20 ? '#2a6011'
-    : headroom > 5  ? '#7a4a00'
-    : headroom > 0  ? '#c05621'
+  // ── Realized gross margin (vs MRP) ──
+  // Gross margin % is on net sales (post-discount), discount % is off MRP — different denominators.
+  // Convert both onto the MRP base: realizedGM = grossMargin * (1 - discount).
+  // This is the gross profit the brand captures per ₹100 of headline MRP.
+  // Example: GM=60% on net sales, discount=50% → realizedGM = 60% × 50% = 30% of MRP.
+  const realizedGM      = liveDiscount != null ? Math.round(m.grossMargin * (1 - liveDiscount/100) * 10) / 10 : null;
+  const realizedGMLabel = realizedGM == null ? '—'
+    : realizedGM >= 30 ? `${realizedGM}% of MRP (strong)`
+    : realizedGM >= 20 ? `${realizedGM}% of MRP (healthy)`
+    : realizedGM >= 12 ? `${realizedGM}% of MRP (watch)`
+    : realizedGM >= 6  ? `${realizedGM}% of MRP (thin)`
+    : `${realizedGM}% of MRP (danger)`;
+  const realizedGMColor = realizedGM == null ? '#9b9a96'
+    : realizedGM >= 30 ? '#2a6011'
+    : realizedGM >= 20 ? '#3B6D11'
+    : realizedGM >= 12 ? '#7a4a00'
+    : realizedGM >= 6  ? '#c05621'
     : '#991b1b';
 
   return { signal, signalColor, signalBg, interpretation, actionNote,
-           headroom, headroomLabel, headroomColor, marginCompressing, compressionPts, qMargins };
+           realizedGM, realizedGMLabel, realizedGMColor, marginCompressing, compressionPts, qMargins };
 }
 
 // ── Render a single company card (shared by main view and after save) ──
 function marginCardHTML(co) {
   const col = COL[co.company] || '#888', bg = BG[co.company] || '#f7f6f3', txt = TXT[co.company] || '#333';
   const { signal, signalColor, signalBg, interpretation, actionNote,
-          headroom, headroomLabel, headroomColor, qMargins } = co._cls;
+          realizedGM, realizedGMLabel, realizedGMColor, qMargins } = co._cls;
   const safeId = co.company.replace(/ /g,'-');
 
   return `
@@ -1573,10 +1580,10 @@ function marginCardHTML(co) {
           <div style="font-size:24px;font-weight:700;color:${co.liveDiscount != null ? col : '#9b9a96'};line-height:1">${co.liveDiscount != null ? co.liveDiscount+'%' : '—'}</div>
           <div style="font-size:10px;color:#9b9a96;margin-top:3px">${co.liveSkus > 0 ? co.liveSkus+' SKUs live' : 'no live data'}</div>
         </div>
-        <div style="background:${headroomColor === '#991b1b' ? '#FEE2E2' : headroomColor === '#c05621' ? '#FFFAF0' : '#f7f6f3'};border-radius:10px;padding:11px 13px;border:1px solid ${headroomColor}22">
-          <div style="font-size:10px;color:#9b9a96;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Margin Headroom</div>
-          <div style="font-size:15px;font-weight:700;color:${headroomColor};line-height:1.2;margin-top:2px;word-break:break-word;overflow-wrap:break-word">${headroomLabel}</div>
-          <div style="font-size:10px;color:#9b9a96;margin-top:3px">gross margin minus live discount</div>
+        <div style="background:${realizedGMColor === '#991b1b' ? '#FEE2E2' : realizedGMColor === '#c05621' ? '#FFFAF0' : '#f7f6f3'};border-radius:10px;padding:11px 13px;border:1px solid ${realizedGMColor}22">
+          <div style="font-size:10px;color:#9b9a96;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Realized GM (vs MRP)</div>
+          <div style="font-size:15px;font-weight:700;color:${realizedGMColor};line-height:1.2;margin-top:2px;word-break:break-word;overflow-wrap:break-word">${realizedGMLabel}</div>
+          <div style="font-size:10px;color:#9b9a96;margin-top:3px">gross profit per ₹100 MRP = GM × (1 − discount)</div>
         </div>
       </div>
 
@@ -1870,7 +1877,7 @@ function renderMarginIntel(useCached = false) {
     <div class="card card-pad" style="margin-bottom:16px">
       <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:14px">Sector Overview — Gross Margin vs. Live Discount</div>
       <div style="position:relative;height:280px"><canvas id="mg-sector-chart"></canvas></div>
-      <div style="margin-top:10px;font-size:11px;color:#9b9a96">Outlined bars = gross margin (from filings). Solid bars = live discount (scraped today). The gap is the margin headroom.</div>
+      <div style="margin-top:10px;font-size:11px;color:#9b9a96">Outlined bars = gross margin on net sales (from filings). Solid bars = live discount off MRP (scraped today). Note: the two bars sit on different denominators — see "Realized GM" tile on each card for the unit-consistent comparison (GM × (1 − discount)).</div>
     </div>
 
     <!-- Methodology -->
@@ -1880,7 +1887,7 @@ function renderMarginIntel(useCached = false) {
         <strong>Marketing Tactic vs. Liquidation Signal:</strong> If a brand discounts heavily online but gross margins remain stable quarter-on-quarter, the discounting is a deliberate e-commerce channel strategy — anchor MRPs are set high, then discounted to appear competitive. If gross margins are simultaneously compressing while discounts run deep and revenue is declining, the discount is consuming real margin — a distress or liquidation signal.<br>
         <strong>Gross Margin:</strong> (Revenue − Cost of Goods Sold) ÷ Revenue. Does not include SG&amp;A, distribution, or marketing.<br>
         <strong>EBITDA Margin:</strong> Closest proxy to operating cash profitability.<br>
-        <strong>Margin Headroom:</strong> Gross margin % minus live discount %. <em>Directional gauge only — gross margin is on revenue, discount is off MRP, so the two share different denominators.</em> A negative or thin headroom flags the brand may be selling near or below cost on discounted SKUs once channel fees, returns, and SG&amp;A are layered on.<br>
+        <strong>Realized GM (vs MRP):</strong> Gross margin is reported on net sales (post-discount); the live discount is off MRP — different denominators, so a raw subtraction is meaningless. We instead convert gross margin onto the MRP base: <code style="background:#f7f6f3;padding:1px 5px;border-radius:3px">Realized GM = GM × (1 − discount)</code>. This is the gross profit the brand keeps per ₹100 of headline MRP. Worked example: GM 60% on net sales × 50% live discount → 60% × 50% = <strong>30% of MRP</strong> retained as gross profit. Thresholds: ≥30% strong, ≥20% healthy, ≥12% watch, ≥6% thin, &lt;6% danger (likely loss-making once channel fees, returns, and SG&amp;A are layered on).<br>
         <strong>"vs YoY" deltas:</strong> Each card compares the headline gross / EBITDA margin against the same period one year earlier (e.g., Q3 FY26 vs Q3 FY25). The trend chart below shows the full multi-quarter or multi-year sequence used for compression detection.<br>
         <strong>Period alignment caveat:</strong> Indian listed companies (VIP, Safari) report on April–March fiscal years; Samsonite reports on calendar years; private-company estimates are full-year (FY April–March). The sector chart compares the most recent reported period for each — they are not strictly co-incident windows.<br>
         <strong>"Estimated" badge:</strong> Marked when no audited gross-margin disclosure exists. For Indian listed cos, gross margin is derived from the cost-of-materials line because it is not separately disclosed. For private cos, all margins are analyst estimates from press coverage.<br>
@@ -2509,25 +2516,25 @@ function downloadDashboardExcel() {
     if (!recs.length) recs = lsGetMargins();
     if (!recs.length) recs = MARGIN_SEED;
 
-    // Live discounts for headroom calc
+    // Live discounts for realized GM calc (GM × (1 − discount), unit-consistent on MRP base)
     const liveMap = {};
     if (curr) curr.companyStats.forEach(c => { liveMap[c.company] = c.avg; });
 
     const header = ['Company', 'Ticker', 'Period', 'Source',
                     'Gross Margin %', 'Gross Margin Prior %', 'EBITDA Margin %', 'EBITDA Margin Prior %',
                     'Net Margin %', 'Revenue (Cr/M)', 'Revenue Growth %',
-                    'Live Discount %', 'Margin Headroom (pts)',
+                    'Live Discount %', 'Realized GM (% of MRP)',
                     'Data Type', 'Last Updated', 'Notes'];
     const rows = [meta, [], header];
     if (recs.length) {
       recs.forEach(r => {
-        const live     = liveMap[r.company] ?? null;
-        const headroom = live != null ? Math.round((r.grossMargin - live) * 10) / 10 : '—';
+        const live       = liveMap[r.company] ?? null;
+        const realizedGM = live != null ? Math.round(r.grossMargin * (1 - live/100) * 10) / 10 : '—';
         rows.push([
           r.company, r.ticker, r.period, r.source,
           r.grossMargin, r.grossMarginPrev, r.ebitdaMargin, r.ebitdaMarginPrev,
           r.netMargin, r.revenue, r.revenueGrowth,
-          live ?? '—', headroom,
+          live ?? '—', realizedGM,
           r.isEstimated ? 'ESTIMATED' : 'AUDITED',
           r.lastUpdated, r.notes,
         ]);
