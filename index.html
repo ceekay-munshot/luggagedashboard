@@ -428,9 +428,11 @@ function fetchInsight(companyStats) {
 function calcStats(arr) {
   if (!arr.length) return {avg:0,median:0,min:0,max:0,p25:0,p75:0,count:0};
   const s = [...arr].sort((a,b)=>a-b);
+  const mid = s.length / 2;
+  const median = s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[Math.floor(mid)];
   return {
     avg:    +(arr.reduce((a,v)=>a+v,0)/arr.length).toFixed(1),
-    median: +s[Math.floor(s.length/2)].toFixed(1),
+    median: +median.toFixed(1),
     min:    +s[0].toFixed(1),
     max:    +s[s.length-1].toFixed(1),
     p25:    +s[Math.floor(s.length*.25)].toFixed(1),
@@ -1556,14 +1558,14 @@ function marginCardHTML(co) {
           <div style="font-size:10px;color:#9b9a96;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Gross Margin</div>
           <div style="font-size:24px;font-weight:700;color:${col};line-height:1">${co.grossMargin}%</div>
           <div style="font-size:10px;color:${co.grossMargin >= co.grossMarginPrev ? '#2a6011' : '#991b1b'};margin-top:3px">
-            ${co.grossMargin >= co.grossMarginPrev ? '▲' : '▼'} ${Math.abs(co.grossMargin - co.grossMarginPrev)} pts vs prior
+            ${co.grossMargin >= co.grossMarginPrev ? '▲' : '▼'} ${+(Math.abs(co.grossMargin - co.grossMarginPrev)).toFixed(1)} pts vs YoY
           </div>
         </div>
         <div style="background:#f7f6f3;border-radius:10px;padding:11px 13px">
           <div style="font-size:10px;color:#9b9a96;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">EBITDA Margin</div>
           <div style="font-size:24px;font-weight:700;color:${co.ebitdaMargin < 0 ? '#991b1b' : col};line-height:1">${co.ebitdaMargin}%</div>
           <div style="font-size:10px;color:${co.ebitdaMargin >= co.ebitdaMarginPrev ? '#2a6011' : '#991b1b'};margin-top:3px">
-            ${co.ebitdaMargin >= co.ebitdaMarginPrev ? '▲' : '▼'} ${Math.abs(+(co.ebitdaMargin - co.ebitdaMarginPrev).toFixed(1))} pts vs prior
+            ${co.ebitdaMargin >= co.ebitdaMarginPrev ? '▲' : '▼'} ${Math.abs(+(co.ebitdaMargin - co.ebitdaMarginPrev).toFixed(1))} pts vs YoY
           </div>
         </div>
         <div style="background:#f7f6f3;border-radius:10px;padding:11px 13px">
@@ -1753,9 +1755,16 @@ async function saveMarginRecord(recordId) {
 // No server, no D1, no deployment dependency — works offline too.
 // ─────────────────────────────────────────────────────────────────────────────
 const LS_KEY = 'ldi_margin_data';
+const LS_VERSION_KEY = 'ldi_margin_seed_version';
+// Bump this whenever MARGIN_SEED changes so users with cached data pick up the new figures.
+// 2026-04-29: refreshed Samsonite to FY2025; corrected Uppercase/Nasher Miles revenue labels;
+// reframed grossMarginPrev/ebitdaMarginPrev as YoY comparables.
+const MARGIN_SEED_VERSION = 2;
 
 function lsGetMargins() {
   try {
+    const storedVersion = parseInt(localStorage.getItem(LS_VERSION_KEY) || '0', 10);
+    if (storedVersion < MARGIN_SEED_VERSION) return []; // force re-seed on stale cache
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
@@ -1764,7 +1773,10 @@ function lsGetMargins() {
 }
 
 function lsSaveMargins(records) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(records)); } catch(e) {}
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(records));
+    localStorage.setItem(LS_VERSION_KEY, String(MARGIN_SEED_VERSION));
+  } catch(e) {}
 }
 
 function lsPatchMargin(recordId, payload) {
@@ -1776,13 +1788,15 @@ function lsPatchMargin(recordId, payload) {
 }
 
 // ── Seed data (used on first visit or if localStorage is cleared) ──
+// grossMarginPrev / ebitdaMarginPrev = YoY comparable period (Q3 FY26 vs Q3 FY25,
+// or FY25 vs FY24), NOT the immediately prior quarter.
 const MARGIN_SEED = [
-  { id:'vip-group',          company:'VIP Group',          ticker:'NSE: VIPIND',   type:'listed',  grossMargin:38, grossMarginPrev:44, ebitdaMargin:-18, ebitdaMarginPrev:5,  netMargin:-12, revenue:454,  revenueGrowth:-9,   period:'Q3 FY26 (Oct–Dec 2025)',              source:'NSE filings · MarketsMojo · AlphaStreet',                             sourceUrl:'https://www.marketsmojo.com/news/result-analysis/vip-industries-q3-fy26-mounting-losses-deepen-as-operational-struggles-persist-3842886', quarterlyGrossMargins:'[{"q":"Q1 FY25","gm":44},{"q":"Q2 FY25","gm":42},{"q":"Q3 FY25","gm":41},{"q":"Q4 FY25","gm":39},{"q":"Q1 FY26","gm":39},{"q":"Q2 FY26","gm":38},{"q":"Q3 FY26","gm":38}]', notes:'Revenue ₹454 Cr in Q3 FY26 (–9.4% YoY). Consecutive quarterly losses since Q2 FY25. Net loss ₹52.9 Cr in Q3 FY26; Q2 FY26 was worse at –₹143 Cr. Gross margin derived from expense ratios — not separately disclosed. Management transition underway.', isEstimated:true,  lastUpdated:'2026-03-24' },
-  { id:'safari-industries',  company:'Safari Industries',  ticker:'NSE: SAFARI',   type:'listed',  grossMargin:46, grossMarginPrev:49, ebitdaMargin:11,  ebitdaMarginPrev:15, netMargin:6.4, revenue:512,  revenueGrowth:-4,   period:'Q3 FY26 (Oct–Dec 2025)',              source:'NSE filings · MarketsMojo · AlphaStreet',                             sourceUrl:'https://www.marketsmojo.com/news/result-analysis/safari-industries-q3-fy26-margin-pressure-overshadows-revenue-growth-as-stock-retreats-3831608',    quarterlyGrossMargins:'[{"q":"Q1 FY25","gm":49},{"q":"Q2 FY25","gm":48},{"q":"Q3 FY25","gm":48},{"q":"Q4 FY25","gm":47},{"q":"Q1 FY26","gm":47},{"q":"Q2 FY26","gm":46},{"q":"Q3 FY26","gm":46}]', notes:'Revenue ₹512 Cr in Q3 FY26 (–3.97% YoY). Net profit ₹32.9 Cr (–29.9% YoY). OPM compressing due to competition and higher distribution costs. Gross margin estimated from expense ratio — not separately disclosed.',                     isEstimated:true,  lastUpdated:'2026-03-24' },
-  { id:'samsonite-group',    company:'Samsonite Group',    ticker:'HKEx: 1910',    type:'listed',  grossMargin:60, grossMarginPrev:59, ebitdaMargin:19,  ebitdaMarginPrev:19, netMargin:10,  revenue:1769, revenueGrowth:-0.4, period:'H1 2024 (Jan–Jun 2024)',              source:'Samsonite H1 2024 Interim Report · HKEx filing 1910.HK',              sourceUrl:'https://corporate.samsonite.com/en/annual-and-interim-reports.html',                                                                                     quarterlyGrossMargins:'[{"q":"H1 2022","gm":55},{"q":"H2 2022","gm":57},{"q":"H1 2023","gm":59},{"q":"H2 2023","gm":59},{"q":"H1 2024","gm":60}]',                                                                                                         notes:'Gross margin 60.2% in H1 2024 — highest in company history, directly from audited HKEx interim report. EBITDA margin 18.9% (+10 bps YoY). Revenue +2.8% in constant currency. Net profit $179.1M (+4.5% YoY).',                                          isEstimated:false, lastUpdated:'2026-03-24' },
-  { id:'hrx',                company:'HRX',                ticker:'Private — Myntra (51%) + Hrithik Roshan', type:'private', grossMargin:50, grossMarginPrev:48, ebitdaMargin:10, ebitdaMarginPrev:8, netMargin:7, revenue:200, revenueGrowth:15, period:'FY24 (estimated, Apr 2023–Mar 2024)', source:'Mint · Hindustan Times · Arthnova · Entrackr — no public P&L filed', sourceUrl:'https://www.hindustantimes.com/entertainment/bollywood/hrithik-roshans-hrx-is-a-rs-1000-crore-juggernaut', quarterlyGrossMargins:'[{"q":"FY22","gm":46},{"q":"FY23","gm":48},{"q":"FY24","gm":50}]', notes:'No audited public P&L. Revenue estimated ~₹200 Cr FY24. Margins estimated from comparable Myntra-native celebrity brands. Luggage is a minor sub-category; brand is primarily athleisure/apparel.', isEstimated:true, lastUpdated:'2026-03-24' },
-  { id:'uppercase',          company:'Uppercase',          ticker:'Private — Sixth Sense Ventures · Jasprit Bumrah (investor)', type:'private', grossMargin:43, grossMarginPrev:36, ebitdaMargin:-15, ebitdaMarginPrev:-24, netMargin:-18, revenue:83, revenueGrowth:500, period:'FY24 (estimated, Apr 2023–Mar 2024)', source:'Entrackr (Sep 2024) · YourStory (Jul 2024) · Indian Retailer — no public P&L', sourceUrl:'https://entrackr.com/2024/09/three-year-old-luggage-brand-uppercases-revenue-zooms-6x-to-rs-62-cr/', quarterlyGrossMargins:'[{"q":"FY22","gm":30},{"q":"FY23","gm":36},{"q":"FY24","gm":43}]', notes:'Revenue ₹83 Cr FY24 (up ~6x from ₹14 Cr FY23 per Entrackr). Pre-profitability; targeting breakeven by FY27. D2C + quick-commerce focus.', isEstimated:true, lastUpdated:'2026-03-24' },
-  { id:'nasher-miles',       company:'Nasher Miles',       ticker:'Private — Seed/Series A · $4M raised (Peak XV, others)', type:'private', grossMargin:38, grossMarginPrev:30, ebitdaMargin:-12, ebitdaMarginPrev:-20, netMargin:-14, revenue:150, revenueGrowth:300, period:'FY24 (estimated, Apr 2023–Mar 2024)', source:'Financial Express · Inc42 · Indian Startup News — no public P&L', sourceUrl:'https://www.financialexpress.com/business/brandwagon-from-rs-2-crore-to-rs-150-crore-nasher-miles-bets-big-on-quick-commerce-demand-4061328/', quarterlyGrossMargins:'[{"q":"FY22","gm":26},{"q":"FY23","gm":30},{"q":"FY24","gm":38}]', notes:'Revenue grew from ₹2 Cr (FY20) to ₹150 Cr (FY24) — ~75x in 4 years. $4M raised from Peak XV Partners. Heavy Meesho + quick-commerce bet. EBITDA losses narrowing.', isEstimated:true, lastUpdated:'2026-03-24' },
+  { id:'vip-group',          company:'VIP Group',          ticker:'NSE: VIPIND',   type:'listed',  grossMargin:38, grossMarginPrev:41, ebitdaMargin:-18, ebitdaMarginPrev:2,  netMargin:-12, revenue:454,  revenueGrowth:-9,   period:'Q3 FY26 (Oct–Dec 2025)',              source:'NSE filings · MarketsMojo · AlphaStreet',                             sourceUrl:'https://www.marketsmojo.com/news/result-analysis/vip-industries-q3-fy26-mounting-losses-deepen-as-operational-struggles-persist-3842886', quarterlyGrossMargins:'[{"q":"Q1 FY25","gm":44},{"q":"Q2 FY25","gm":42},{"q":"Q3 FY25","gm":41},{"q":"Q4 FY25","gm":39},{"q":"Q1 FY26","gm":39},{"q":"Q2 FY26","gm":38},{"q":"Q3 FY26","gm":38}]', notes:'Revenue ₹454 Cr in Q3 FY26 (–9.4% YoY). Net loss ₹52.9 Cr (Q2 FY26 was worse at –₹143 Cr). Consecutive quarterly losses since Q2 FY25. Gross margin derived from expense ratios — not separately disclosed. Q4 FY26 results expected May 2026.', isEstimated:true,  lastUpdated:'2026-04-29' },
+  { id:'safari-industries',  company:'Safari Industries',  ticker:'NSE: SAFARI',   type:'listed',  grossMargin:46, grossMarginPrev:48, ebitdaMargin:11,  ebitdaMarginPrev:14, netMargin:6.4, revenue:512,  revenueGrowth:-4,   period:'Q3 FY26 (Oct–Dec 2025)',              source:'NSE filings · MarketsMojo · AlphaStreet',                             sourceUrl:'https://www.marketsmojo.com/news/result-analysis/safari-industries-q3-fy26-margin-pressure-overshadows-revenue-growth-as-stock-retreats-3831608',    quarterlyGrossMargins:'[{"q":"Q1 FY25","gm":49},{"q":"Q2 FY25","gm":48},{"q":"Q3 FY25","gm":48},{"q":"Q4 FY25","gm":47},{"q":"Q1 FY26","gm":47},{"q":"Q2 FY26","gm":46},{"q":"Q3 FY26","gm":46}]', notes:'Revenue ₹512 Cr in Q3 FY26 (–3.97% YoY). Net profit ₹32.9 Cr (–29.9% YoY). OPM compressing due to competition and higher distribution costs. Gross margin estimated from expense ratio — not separately disclosed. Q4 FY26 results expected May 2026.', isEstimated:true,  lastUpdated:'2026-04-29' },
+  { id:'samsonite-group',    company:'Samsonite Group',    ticker:'HKEx: 1910',    type:'listed',  grossMargin:59.6, grossMarginPrev:60.0, ebitdaMargin:17.3, ebitdaMarginPrev:19.0, netMargin:8.4, revenue:3498, revenueGrowth:-2.6, period:'FY 2025 (Jan–Dec 2025)',              source:'Samsonite FY2025 Final Results · HKEx 1910.HK',              sourceUrl:'https://www.prnewswire.com/news-releases/samsonite-group-sa-announces-results-for-the-year-ended-december-31-2025-302719327.html',                                                                                     quarterlyGrossMargins:'[{"q":"H1 2022","gm":55},{"q":"H2 2022","gm":57},{"q":"H1 2023","gm":59},{"q":"H2 2023","gm":59},{"q":"H1 2024","gm":60},{"q":"H2 2024","gm":60},{"q":"FY 2025","gm":59.6}]',                                                                                                         notes:'Net sales US$3,498M FY2025 (–2.6% YoY). Adjusted net income $293M (down from $370M FY2024). Gross margin 59.6% vs 60.0% prior — slight compression. Adjusted EBITDA margin 17.3% (–170 bps YoY). Operating profit $528M (vs $629M). Q4 2025 showed sequential improvement (gross 60.3%). Audited; results announced Mar 2026.',                                          isEstimated:false, lastUpdated:'2026-04-29' },
+  { id:'hrx',                company:'HRX',                ticker:'Private — Myntra (51%) + Hrithik Roshan', type:'private', grossMargin:50, grossMarginPrev:48, ebitdaMargin:10, ebitdaMarginPrev:8, netMargin:7, revenue:200, revenueGrowth:15, period:'FY24 (estimated, Apr 2023–Mar 2024)', source:'Arthnova · Mint · Entrackr — no public P&L filed', sourceUrl:'https://arthnova.com/hrithik-roshan-hrx-200-crore-fitness-brand-myntra/', quarterlyGrossMargins:'[{"q":"FY22","gm":46},{"q":"FY23","gm":48},{"q":"FY24","gm":50}]', notes:'No audited public P&L. Brand-level revenue ~₹200–220 Cr FY24 (Arthnova). Note: ₹1,000 Cr+ figures sometimes cited refer to GMV through the Myntra channel, not brand revenue. Margins estimated from comparable Myntra-native celebrity brands. Luggage is a minor sub-category; brand is primarily athleisure/apparel.', isEstimated:true, lastUpdated:'2026-04-29' },
+  { id:'uppercase',          company:'Uppercase',          ticker:'Private — Accel · Sixth Sense · Jasprit Bumrah', type:'private', grossMargin:45, grossMarginPrev:43, ebitdaMargin:-30, ebitdaMarginPrev:-15, netMargin:-42, revenue:83, revenueGrowth:34, period:'FY25 (Apr 2024–Mar 2025)', source:'Newsbytes (Oct 2025) · Entrackr · YourStory — no public P&L', sourceUrl:'https://www.newsbytesapp.com/news/business/eco-friendly-luggage-brand-uppercase-sees-34-revenue-growth-in-fy25/tldr', quarterlyGrossMargins:'[{"q":"FY22","gm":30},{"q":"FY23","gm":36},{"q":"FY24","gm":43},{"q":"FY25","gm":45}]', notes:'Revenue ₹83 Cr FY25 (+34% YoY from ₹62 Cr FY24). Losses doubled to ₹35 Cr in FY25 — net loss margin ~–42%. EBITDA loss estimated ~–30% (no public disclosure). $9M Series B closed Aug 2024 (Accel-led). Targeting breakeven by FY27. By Nov 2025 (FY26 YTD) revenue had reached ~₹85 Cr (+50% YoY pace).', isEstimated:true, lastUpdated:'2026-04-29' },
+  { id:'nasher-miles',       company:'Nasher Miles',       ticker:'Private — Series A · $4M raised (Peak XV)', type:'private', grossMargin:42, grossMarginPrev:38, ebitdaMargin:5, ebitdaMarginPrev:-12, netMargin:3, revenue:120, revenueGrowth:33, period:'FY25 (Apr 2024–Mar 2025)', source:'Entrepreneur India · Founder Thesis · Inc42 — no public P&L', sourceUrl:'https://www.entrepreneur.com/en-in/entrepreneurs/nasher-miles-packed-up-to-clock-rs-200-crore-in-fy26/492110', quarterlyGrossMargins:'[{"q":"FY22","gm":26},{"q":"FY23","gm":30},{"q":"FY24","gm":38},{"q":"FY25","gm":42}]', notes:'Revenue ₹120 Cr in FY25 (vs ~₹90 Cr FY24, +33% YoY). FY26 target ₹200 Cr. Bounced back to profitability in FY25 after FY24 dip (brand-building + manufacturing transitions). $4M Series A closed Jul 2024 (Peak XV). Heavy Meesho + quick-commerce bet. Post-money valuation ~$30M.', isEstimated:true, lastUpdated:'2026-04-29' },
 ];
 
 function seedMarginData() {
@@ -1866,7 +1880,10 @@ function renderMarginIntel(useCached = false) {
         <strong>Marketing Tactic vs. Liquidation Signal:</strong> If a brand discounts heavily online but gross margins remain stable quarter-on-quarter, the discounting is a deliberate e-commerce channel strategy — anchor MRPs are set high, then discounted to appear competitive. If gross margins are simultaneously compressing while discounts run deep and revenue is declining, the discount is consuming real margin — a distress or liquidation signal.<br>
         <strong>Gross Margin:</strong> (Revenue − Cost of Goods Sold) ÷ Revenue. Does not include SG&amp;A, distribution, or marketing.<br>
         <strong>EBITDA Margin:</strong> Closest proxy to operating cash profitability.<br>
-        <strong>Margin Headroom:</strong> Gross margin % minus live discount %. If negative, the brand may be selling below cost of goods on some products (after channel fees, returns, SG&amp;A).<br>
+        <strong>Margin Headroom:</strong> Gross margin % minus live discount %. <em>Directional gauge only — gross margin is on revenue, discount is off MRP, so the two share different denominators.</em> A negative or thin headroom flags the brand may be selling near or below cost on discounted SKUs once channel fees, returns, and SG&amp;A are layered on.<br>
+        <strong>"vs YoY" deltas:</strong> Each card compares the headline gross / EBITDA margin against the same period one year earlier (e.g., Q3 FY26 vs Q3 FY25). The trend chart below shows the full multi-quarter or multi-year sequence used for compression detection.<br>
+        <strong>Period alignment caveat:</strong> Indian listed companies (VIP, Safari) report on April–March fiscal years; Samsonite reports on calendar years; private-company estimates are full-year (FY April–March). The sector chart compares the most recent reported period for each — they are not strictly co-incident windows.<br>
+        <strong>"Estimated" badge:</strong> Marked when no audited gross-margin disclosure exists. For Indian listed cos, gross margin is derived from the cost-of-materials line because it is not separately disclosed. For private cos, all margins are analyst estimates from press coverage.<br>
         <strong>Updating data:</strong> Tap the ✏️ pencil icon on any company card to enter the latest quarterly figures. Data is saved locally in your browser and persists across sessions. You only need to update when a new quarterly filing is released — all other times the stored data is used automatically.
       </div>
     </div>
