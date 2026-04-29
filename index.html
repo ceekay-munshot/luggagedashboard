@@ -623,9 +623,10 @@ function renderDashboard() {
     const total=steps.length, done=steps.filter(s=>s.status==='done').length, failed=steps.filter(s=>s.status==='error').length;
     const pct=Math.round((done+failed)/total*100);
     document.getElementById('app').innerHTML = `<div class="fadein" style="max-width:520px;margin:40px auto">
-      <div style="text-align:center;margin-bottom:32px">
+      <div style="text-align:center;margin-bottom:24px">
         <div style="font-size:22px;font-weight:700;margin-bottom:6px">Fetching Live Prices</div>
-        <div style="font-size:13px;color:#9b9a96">Scraping Amazon.in &amp; Flipkart category pages · ${TODAY}</div>
+        <div style="font-size:13px;color:#9b9a96;margin-bottom:14px">Scraping Amazon.in &amp; Flipkart category pages · ${TODAY}</div>
+        <button onclick="navigate({type:'margin'})" style="font-size:13px;background:#f0ede8;border:0.5px solid rgba(26,26,24,0.15);color:#1a1a18;padding:8px 18px;border-radius:8px;cursor:pointer;font-weight:600">📊 Margin Intelligence</button>
       </div>
       <div style="background:#fff;border-radius:14px;padding:20px 24px;margin-bottom:16px;border:0.5px solid rgba(26,26,24,0.12)">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:#9b9a96;margin-bottom:8px">
@@ -667,10 +668,6 @@ function renderDashboard() {
       <div style="font-size:14px;color:#9b9a96;margin-bottom:28px;line-height:1.6">Live discount intelligence for VIP Group, Safari Industries, Samsonite Group, HRX &amp; Uppercase — scraped directly from Amazon.in &amp; Flipkart category pages.</div>
       <button onclick="doRefresh()" style="background:#BA7517;color:#fff;border:none;padding:14px 36px;font-size:16px;font-weight:600;border-radius:10px;cursor:pointer">▶ Fetch Live Data</button>
       <div style="font-size:11px;color:#c0bfbb;margin-top:16px">~2–3 minutes to fetch all 7 brands · Data as of today</div>
-      <div style="margin-top:32px;padding-top:20px;border-top:0.5px solid rgba(26,26,24,0.08)">
-        <div style="font-size:11px;color:#9b9a96;margin-bottom:8px">Filing-based analysis is available without a refresh:</div>
-        <button onclick="navigate({type:'margin'})" style="font-size:13px;background:#f0ede8;border-color:rgba(26,26,24,0.15);padding:9px 18px;border-radius:8px;cursor:pointer">📊 Margin Intelligence</button>
-      </div>
     </div>`;
     return;
   }
