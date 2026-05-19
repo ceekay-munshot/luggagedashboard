@@ -68,8 +68,21 @@ const BRANDS = [
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────────────────────
+const HISTORY_KEY = 'luggage:history:v1';
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+function saveHistory(hist) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(hist)); }
+  catch (e) { /* quota exceeded or unavailable — keep in-memory only */ }
+}
 let STATE = {
-  curr: null, history: [], insight: '', insightLoading: false,
+  curr: null, history: loadHistory(), insight: '', insightLoading: false,
   running: false, steps: [], lastRefresh: null, view: null,
 };
 
@@ -267,7 +280,8 @@ async function doRefresh() {
     safari: stats.companyStats.find(c=>c.company==='Safari Industries')?.avg,
     sam:    stats.companyStats.find(c=>c.company==='Samsonite Group')?.avg,
   };
-  STATE.history    = [...STATE.history.slice(-9), snap];
+  STATE.history    = [...STATE.history, snap];
+  saveHistory(STATE.history);
   STATE.curr       = stats;
   STATE.lastRefresh= now;
   STATE.running    = false;
