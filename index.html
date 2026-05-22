@@ -72,21 +72,28 @@ const BRANDS = [
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────────────────────
-const HISTORY_KEY = 'luggage:history:v1';
-function loadHistory() {
+// Refresh history is stored server-side (Cloudflare KV via /api/history) so
+// every client shares the same trend chart instead of a per-browser one.
+async function fetchServerHistory() {
   try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
+    const res = await fetch('/api/history');
+    const data = await res.json();
+    return (data && data.ok && Array.isArray(data.history)) ? data.history : [];
   } catch (e) { return []; }
 }
-function saveHistory(hist) {
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(hist)); }
-  catch (e) { /* quota exceeded or unavailable — keep in-memory only */ }
+async function saveSnapshot(snap) {
+  try {
+    const res = await fetch('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snap }),
+    });
+    const data = await res.json();
+    return (data && data.ok && Array.isArray(data.history)) ? data.history : null;
+  } catch (e) { return null; }
 }
 let STATE = {
-  curr: null, history: loadHistory(), insight: '', insightLoading: false,
+  curr: null, history: [], insight: '', insightLoading: false,
   running: false, steps: [], lastRefresh: null, view: null,
 };
 
@@ -590,12 +597,14 @@ async function doRefresh() {
     ucase:  stats.companyStats.find(c=>c.company==='Uppercase')?.avg,
     nasher: stats.companyStats.find(c=>c.company==='Nasher Miles')?.avg,
   };
-  STATE.history    = [...STATE.history, snap];
-  saveHistory(STATE.history);
   STATE.curr       = stats;
   STATE.lastRefresh= now;
   STATE.running    = false;
+  STATE.history    = [...STATE.history, snap];
   render();
+
+  // Persist to shared storage; reconcile with the authoritative server list.
+  saveSnapshot(snap).then(saved=>{ if(Array.isArray(saved)){ STATE.history=saved; render(); } });
 
   STATE.insightLoading = true;
   render();
@@ -2746,6 +2755,7 @@ document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key==='A'){e.preventDefault();navigate({type:'admin'});}
 });
 render();
+fetchServerHistory().then(h=>{ STATE.history=h; render(); });
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" async crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer crossorigin="anonymous"></script>
