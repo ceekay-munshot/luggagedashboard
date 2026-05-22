@@ -7,5 +7,11 @@
     "directory": "./",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "LUGGAGE_HISTORY_KV",
+      "id": "2c94fcf4f4204db5a732a96049505952"
+    }
+  ]
 }
