@@ -1322,6 +1322,19 @@ function renderTier() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TREND X-AXIS LABELS — show the DATE of each refresh ("12 Oct"), not the time.
+// Derived from the snapshot timestamp; the exact date + time shows on hover.
+// ─────────────────────────────────────────────────────────────────────────────
+function trendDateLabel(s){
+  if (s && s.ts) { const d = new Date(s.ts); if (!isNaN(d)) return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'}); }
+  return (s && s.label) || '';
+}
+function trendFullStamp(s){
+  if (s && s.ts) { const d = new Date(s.ts); if (!isNaN(d)) return d.toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}); }
+  return (s && s.label) || '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HISTORY PAGE — continuous trend graph + data table
 // ─────────────────────────────────────────────────────────────────────────────
 function renderHistory() {
@@ -1355,7 +1368,7 @@ function renderHistory() {
     const prevSnap = [...h].reverse()[i+1];
     return `<tr style="border-bottom:0.5px solid rgba(26,26,24,0.07)">
       <td style="padding:9px 12px;font-size:12px;color:#5f5e5a;white-space:nowrap">
-        ${snap.label}${i===0?`<span class="badge" style="background:#e6f1fb;color:#0c447c;margin-left:7px;font-size:9px">latest</span>`:''}
+        <strong>${trendDateLabel(snap)}</strong> <span style="color:#9b9a96">· ${snap.label}</span>${i===0?`<span class="badge" style="background:#e6f1fb;color:#0c447c;margin-left:7px;font-size:9px">latest</span>`:''}
       </td>
       ${ALL_COMPANIES.map(co=>{
         const cv = snap.stats.companyStats.find(c=>c.company===co)?.avg;
@@ -1454,7 +1467,7 @@ function renderHistory() {
       <div style="padding:12px 15px 8px;font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase">Run Log</div>
       <table style="table-layout:fixed">
         <thead><tr style="border-bottom:0.5px solid rgba(26,26,24,0.18)">
-          <th style="text-align:left;width:24%">Time</th>
+          <th style="text-align:left;width:26%">Date · Time</th>
           <th style="text-align:right;color:${COL["VIP Group"]}">VIP</th>
           <th style="text-align:right;color:${COL["Safari Industries"]}">Safari</th>
           <th style="text-align:right;color:${COL["Samsonite Group"]}">Samsonite</th>
@@ -1472,7 +1485,7 @@ function renderHistory() {
   if (!hasData) return;
 
   waitForChart(() => {
-    const labels = h.map(s => s.label);
+    const labels = h.map(trendDateLabel);
 
     // Company trend chart
     mkChart('hist-company-chart', {
@@ -1502,12 +1515,14 @@ function renderHistory() {
           legend: { position: 'top', labels: { font: { size: 11 }, usePointStyle: true, pointStyleWidth: 16 } },
           tooltip: {
             callbacks: {
+              title: items => trendFullStamp(h[items[0].dataIndex]),
               label: ctx => ` ${ctx.dataset.label}: ${ctx.raw != null ? ctx.raw + '% avg discount' : '—'}`,
             }
           }
         },
         scales: {
-          x: { grid: { display: false }, ticks: { font: { size: 10 }, color: '#9b9a96' } },
+          x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 0, font: { size: 10 }, color: '#9b9a96',
+            callback: function(v){ const c=this.getLabelForValue(v); const p=v>0?this.getLabelForValue(v-1):null; return c!==p?c:''; } } },
           y: { min: 0, max: 100, grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => v + '%', font: { size: 10 }, color: '#9b9a96' } }
         }
       }
@@ -1735,7 +1750,7 @@ function renderPrices() {
       mkChart('price-trend-chart', {
         type: 'line',
         data: {
-          labels: h.map(s => s.label),
+          labels: h.map(trendDateLabel),
           datasets: COMPANIES.map(co => ({
             label: co.split(' ')[0],
             data: h.map(s => snapAvg(s, co)),
@@ -1747,10 +1762,11 @@ function renderPrices() {
           responsive: true, maintainAspectRatio: false,
           plugins: {
             legend: { position: 'top', labels: { font: { size: 11 }, usePointStyle: true, boxWidth: 8 } },
-            tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.raw!=null?'₹'+Number(c.raw).toLocaleString('en-IN'):'no data'}` } }
+            tooltip: { callbacks: { title: items => trendFullStamp(h[items[0].dataIndex]), label: c => ` ${c.dataset.label}: ${c.raw!=null?'₹'+Number(c.raw).toLocaleString('en-IN'):'no data'}` } }
           },
           scales: {
-            x: { grid: { display: false }, ticks: { font: { size: 10 }, color: '#9b9a96' } },
+            x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 0, font: { size: 10 }, color: '#9b9a96',
+              callback: function(v){ const c=this.getLabelForValue(v); const p=v>0?this.getLabelForValue(v-1):null; return c!==p?c:''; } } },
             y: { grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => '₹'+Number(v).toLocaleString('en-IN'), font: { size: 10 }, color: '#9b9a96' } }
           }
         }
