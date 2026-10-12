@@ -34,10 +34,10 @@ you don't have to re-scrape just to see the latest numbers — click Refresh for
 
 | Piece | File | Role |
 |---|---|---|
-| Front-end (single page) | `index.html` | All UI + charts. Scrapes Amazon/Flipkart **client-side** via the Firecrawl API, computes all stats in the browser. |
-| API / hosting | `worker.js` | Cloudflare Worker. Serves the static site and provides `/api/history` (shared refresh history). |
-| Shared history store | Cloudflare **KV** (`LUGGAGE_HISTORY_KV`) | Every refresh snapshot is saved here so the trend/price charts are shared across all viewers. |
-| Config | `wrangler.jsonc` | Worker + static-assets + KV binding config. |
+| Front-end (single page) | `index.html` | All UI + charts. For a manual refresh, scrapes Amazon/Flipkart **client-side** via Firecrawl and computes stats in the browser. |
+| API / hosting / daily cron | `worker.js` | Cloudflare Worker. Serves the static site, provides `/api/history`, and runs a **daily scheduled scrape** (same scraping code, server-side) so price history builds automatically. |
+| Shared history store | Cloudflare **KV** (`LUGGAGE_HISTORY_KV`) | `history` = slim per-day snapshots (aggregates only, so a year fits); `current` = latest full snapshot (per-product detail). Shared across all viewers. |
+| Config | `wrangler.jsonc` | Worker + static-assets + KV binding + daily cron (`triggers.crons`). |
 
 Scraping engine: **Firecrawl** (`api.firecrawl.dev`). Amazon and Flipkart use different
 page layouts, so `index.html` has a dedicated extractor for each:
@@ -57,8 +57,34 @@ npm run dev        # wrangler dev — local preview at http://localhost:8787
 npm run deploy     # wrangler deploy — push to Cloudflare
 ```
 
-The Firecrawl API key is currently embedded in `index.html` (client-side). See
-**Known limitations** below.
+The Firecrawl API key for *manual* refreshes is embedded in `index.html` (client-side).
+The *daily cron* reads its key from a Worker secret (see below), not from the code.
+
+---
+
+## Daily automatic price capture (one-time setup)
+
+The Worker runs a scheduled scrape every day at **02:30 UTC (08:00 IST)** — set in
+`wrangler.jsonc` under `triggers.crons`. It scrapes all 10 brands server-side and appends
+a snapshot to the shared history, so the price/discount trend builds on its own with
+nobody clicking "Refresh".
+
+For the daily cron to run it needs the Firecrawl key as a **Worker secret** (one time):
+
+```bash
+npx wrangler secret put FIRECRAWL_KEY
+# paste the Firecrawl key when prompted
+```
+
+(Or add it in the Cloudflare dashboard → your Worker → Settings → Variables and Secrets.)
+Without the secret, the daily cron simply skips and the rest of the dashboard works normally.
+
+- **Kick off the first capture now** (instead of waiting for tomorrow): `POST /api/capture`
+  on the live site — e.g. `curl -X POST https://<your-worker-url>/api/capture`.
+- **Credits:** each daily run uses ~20 Firecrawl credits (10 brands × 2 pages), ≈600/month.
+  Make sure the Firecrawl plan covers it.
+- **Change the time / frequency:** edit `triggers.crons` in `wrangler.jsonc` (standard cron,
+  UTC) and redeploy.
 
 ---
 
@@ -95,12 +121,14 @@ Margin Intelligence tab — changes save instantly. Bump `MARGIN_SEED_VERSION` i
 ## Known limitations
 
 - **Price history is not retroactive.** The tool reads *live* prices, so the
-  average-price-over-time chart builds from the moment tracking started — it is not a
-  backfilled 12-month history. A true last-1-year price history needs a historical
-  price-data source (e.g. Keepa for Amazon); not currently integrated.
-- **Firecrawl key is client-side.** The key in `index.html` is visible in page source.
-  For production it should move behind the Worker (a `/api/scrape` proxy with the key as
-  a Cloudflare secret). Flagged as a follow-up.
-- **Refresh is manual and sequential** (10 brands × 2 pages). A full refresh takes a few
-  minutes and spends Firecrawl credits each time.
+  average-price-over-time chart only has data from when capture started — there is no
+  backfilled history from before that. Going forward, the **daily cron builds it
+  automatically** (see above). A true pre-existing last-1-year history would need a
+  historical price-data source (e.g. Keepa for Amazon); not currently integrated.
+- **Firecrawl key — manual refresh is still client-side.** The key in `index.html` is
+  visible in page source (used for the browser "Refresh" button). The daily cron uses a
+  Worker secret instead. Moving the manual path behind a Worker proxy too is a good
+  follow-up to fully remove the key from the page.
+- **Manual refresh is sequential** (10 brands × 2 pages) and takes a few minutes; the
+  daily cron does the same server-side. Each full scrape spends ~20 Firecrawl credits.
 - Page-layout changes on Amazon/Flipkart can require the extractor to be updated.

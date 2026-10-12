@@ -78,8 +78,11 @@ async function fetchServerHistory() {
   try {
     const res = await fetch('/api/history');
     const data = await res.json();
-    return (data && data.ok && Array.isArray(data.history)) ? data.history : [];
-  } catch (e) { return []; }
+    if (data && data.ok) {
+      return { history: Array.isArray(data.history) ? data.history : [], current: data.current || null };
+    }
+    return { history: [], current: null };
+  } catch (e) { return { history: [], current: null }; }
 }
 async function saveSnapshot(snap) {
   try {
@@ -2647,16 +2650,17 @@ document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key==='A'){e.preventDefault();navigate({type:'admin'});}
 });
 render();
-fetchServerHistory().then(h=>{
-  STATE.history = h;
-  // "Show me the last result": if saved runs exist but nothing has been scraped
-  // this session, display the most recent saved snapshot immediately instead of
-  // the empty "Fetch Live Data" screen. A banner marks it as a saved run.
-  if (!STATE.curr && Array.isArray(h) && h.length) {
-    const last = h[h.length - 1];
-    if (last && last.stats) {
-      STATE.curr        = last.stats;
-      STATE.lastRefresh = last.ts ? new Date(last.ts) : null;
+fetchServerHistory().then(({ history, current }) => {
+  STATE.history = history;
+  // "Show me the last result": display the most recent saved scrape immediately
+  // instead of the empty "Fetch Live Data" screen. Prefer the full "current"
+  // snapshot (keeps per-product detail for the Price Tracker tables); fall back
+  // to the latest history entry (older full snapshots still carry their products).
+  if (!STATE.curr) {
+    const src = current || (history.length ? history[history.length - 1] : null);
+    if (src && src.stats) {
+      STATE.curr        = src.stats;
+      STATE.lastRefresh = src.ts ? new Date(src.ts) : null;
       STATE.fromCache   = true;
     }
   }

@@ -13,5 +13,11 @@
       "binding": "LUGGAGE_HISTORY_KV",
       "id": "2c94fcf4f4204db5a732a96049505952"
     }
-  ]
+  ],
+  // Daily automatic price capture: 02:30 UTC = 08:00 IST, every day.
+  // The scheduled() handler in worker.js scrapes all brands and appends a snapshot,
+  // so price/discount history builds on its own with no one clicking "Refresh".
+  "triggers": {
+    "crons": ["30 2 * * *"]
+  }
 }
