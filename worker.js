@@ -14,9 +14,9 @@
 // The scraping library below is ported verbatim from index.html so the daily cron
 // produces exactly the same numbers as a manual refresh.
 //
-// The Firecrawl API key is read ONLY from the FIRECRAWL_KEY secret (set once with
-// `npx wrangler secret put FIRECRAWL_KEY`). It is never hardcoded here. If the secret
-// is not set, the daily cron simply skips (the dashboard still works normally).
+// The Firecrawl API key is read from the FIRECRAWL_KEY secret (or FIRECRAWL_API_KEY,
+// whichever is set). It is never hardcoded here. If neither secret is set, the daily
+// cron simply skips (the dashboard still works normally).
 
 // ─── Scraping library (ported verbatim from index.html) ───
 const BRANDS = [
@@ -508,8 +508,8 @@ function buildSnapshot(allSkus) {
 
 async function dailyCapture(env) {
   if (!env || !env.LUGGAGE_HISTORY_KV) return;
-  const key = env && env.FIRECRAWL_KEY;
-  if (!key) { console.log('dailyCapture: FIRECRAWL_KEY secret not set — skipping'); return; }
+  const key = env && (env.FIRECRAWL_KEY || env.FIRECRAWL_API_KEY);
+  if (!key) { console.log('dailyCapture: FIRECRAWL_KEY/FIRECRAWL_API_KEY secret not set — skipping'); return; }
   try {
     const { allSkus, good } = await scrapeAllBrands(key);
     // Don't pollute the trend with a bad-network day
@@ -568,8 +568,8 @@ export default {
 
     // Manual trigger for the daily capture (handy for a first run / testing): POST /api/capture
     if (url.pathname === '/api/capture' && request.method === 'POST') {
-      const key = env && env.FIRECRAWL_KEY;
-      if (!key) return jsonError('FIRECRAWL_KEY secret not set', 503);
+      const key = env && (env.FIRECRAWL_KEY || env.FIRECRAWL_API_KEY);
+      if (!key) return jsonError('FIRECRAWL_KEY (or FIRECRAWL_API_KEY) secret not set', 503);
       try {
         const { allSkus, good } = await scrapeAllBrands(key);
         if (good < 3 || allSkus.length < 10) return jsonError('Low yield: ' + good + ' brands, ' + allSkus.length + ' skus', 502);
