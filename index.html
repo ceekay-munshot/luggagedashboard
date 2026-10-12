@@ -95,6 +95,7 @@ async function saveSnapshot(snap) {
 let STATE = {
   curr: null, history: [], insight: '', insightLoading: false,
   running: false, steps: [], lastRefresh: null, view: null,
+  fromCache: false,  // true when curr was loaded from a saved snapshot, not a live scrape
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,6 +178,59 @@ async function firecrawlScrape(url) {
   return { markdown: data.data?.markdown || '', url };
 }
 
+// ── Parse SKUs from an AMAZON.IN listing page ──────────────────────────────
+//
+// Current (2026) Amazon markdown structure for each product:
+//   [Black and White](https://www.amazon.in/<slug>/dp/<ASIN>/ref=...)   ← colour swatch
+//   ...
+//   [₹1,989₹1,989M.R.P: ₹2,875\ M.R.P: ₹2,875₹2,875](https://www.amazon.in/<slug>/dp/<ASIN>/...)
+//
+// The product title lives in the URL <slug> (e.g. "Skybags-Rubik-Check-8-Wheel-Trolley"),
+// NOT in visible link text. Selling price is the first ₹ figure in the price link;
+// MRP is the figure right after "M.R.P:". We anchor on that price link, take the
+// name from the slug, require the brand to appear as a whole word in the slug, and
+// de-duplicate by ASIN so colour variants of one listing aren't double-counted.
+function parseAmazonSKUs(markdown, pageUrl, brand, company) {
+  const skus = [];
+  const brandTokens = brand.toLowerCase().split(/\s+/).filter(Boolean);
+  const toNum = s => parseInt(String(s).replace(/[^\d]/g, ''), 10);
+  const seen = new Set();
+
+  // Price link: text contains a ₹ figure, URL is an Amazon /dp/<ASIN> product page.
+  const re = /\[([^\]]*?₹[^\]]*?)\]\((https?:\/\/(?:www\.)?amazon\.in\/([^/)]+)\/dp\/([A-Z0-9]{8,12})[^)]*)\)/gi;
+  let m;
+  while ((m = re.exec(markdown)) !== null) {
+    const text = m[1], url = m[2], slug = m[3], asin = m[4];
+
+    // Brand must appear as a whole word in the slug (so "VIP" doesn't match
+    // "Con-VIP-ack" and a "VIP" search doesn't pick up Aristocrat products).
+    const slugTokens = slug.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    if (!brandTokens.every(bt => slugTokens.includes(bt))) continue;
+
+    // Selling price = first ₹ figure; MRP = figure right after "M.R.P:".
+    const sellMatch = text.match(/₹\s*([\d,]+)/);
+    const mrpMatch  = text.match(/M\.?R\.?P\.?\s*:?\s*[₹Rs\s]*([\d,]+)/i);
+    if (!sellMatch || !mrpMatch) continue;
+    const selling = toNum(sellMatch[1]);
+    const mrp     = toNum(mrpMatch[1]);
+    if (!mrp || !selling || mrp <= selling || selling < 300 || mrp > 300000) continue;
+    const discount = +((mrp - selling) / mrp * 100).toFixed(1);
+    if (discount < 5 || discount > 92) continue;
+
+    if (seen.has(asin)) continue;
+    seen.add(asin);
+
+    let name = slug;
+    try { name = decodeURIComponent(slug); } catch (e) {}
+    name = name.replace(/-/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 130);
+
+    const tier = mrp < 2000 ? '<₹2k' : mrp < 6000 ? '₹2–6k' : '>₹6k';
+    skus.push({ brand, company, name, mrp, selling, discount,
+                platform: 'Amazon', tier, url, isProductPage: true, isLive: true });
+  }
+  return skus;
+}
+
 // ── Parse SKUs from a scraped listing page ─────────────────────────────────
 //
 // REAL Firecrawl markdown structures observed:
@@ -202,6 +256,14 @@ async function firecrawlScrape(url) {
 //   ❌ Text contains "http" (raw URL leaked into name)
 // ─────────────────────────────────────────────────────────────────────────────
 function parseSKUsFromPage(markdown, pageUrl, brand, company) {
+  // Amazon.in's listing markdown changed: product TITLES are no longer the
+  // clickable text (the visible links are colour swatches), the title now lives
+  // in the URL slug, and price+MRP sit together inside one price link. The old
+  // "find a product-name link, then read nearby prices" approach therefore finds
+  // almost nothing on Amazon. Use a dedicated Amazon extractor that anchors on
+  // the price block itself. Flipkart still uses the name-link logic below.
+  if (pageUrl.includes('amazon')) return parseAmazonSKUs(markdown, pageUrl, brand, company);
+
   const skus      = [];
   const isAmazon  = pageUrl.includes('amazon');
   const platform  = isAmazon ? 'Amazon' : 'Flipkart';
@@ -461,23 +523,38 @@ function calcStats(arr) {
   };
 }
 
+// Selling-price aggregates (kept separate from discount stats in calcStats).
+// These flow into every history snapshot, so an avg-price trend builds over time.
+function priceAgg(arr) {
+  if (!arr.length) return { avgPrice:0, medianPrice:0, minPrice:0, maxPrice:0 };
+  const s = [...arr].sort((a,b)=>a-b);
+  const mid = s.length/2;
+  const median = s.length%2===0 ? (s[mid-1]+s[mid])/2 : s[Math.floor(mid)];
+  return {
+    avgPrice:    Math.round(arr.reduce((a,v)=>a+v,0)/arr.length),
+    medianPrice: Math.round(median),
+    minPrice:    s[0],
+    maxPrice:    s[s.length-1],
+  };
+}
+
 function buildStats(skus) {
   const co={}, br={};
   skus.forEach(sku => {
-    const {brand,company,discount,platform,tier} = sku;
-    if (!co[company]) co[company]={discs:[],tiers:{},skus:[]};
-    co[company].discs.push(discount); co[company].skus.push(sku);
+    const {brand,company,discount,platform,tier,selling} = sku;
+    if (!co[company]) co[company]={discs:[],prices:[],tiers:{},skus:[]};
+    co[company].discs.push(discount); co[company].prices.push(selling); co[company].skus.push(sku);
     co[company].tiers[tier]=co[company].tiers[tier]||[]; co[company].tiers[tier].push(discount);
-    if (!br[brand]) br[brand]={discs:[],company,plt:{},skus:[]};
-    br[brand].discs.push(discount); br[brand].skus.push(sku);
+    if (!br[brand]) br[brand]={discs:[],prices:[],company,plt:{},skus:[]};
+    br[brand].discs.push(discount); br[brand].prices.push(selling); br[brand].skus.push(sku);
     br[brand].plt[platform]=(br[brand].plt[platform]||0)+1;
   });
-  const companyStats = Object.entries(co).map(([company,{discs,tiers,skus}])=>({
-    company,...calcStats(discs),skus,
+  const companyStats = Object.entries(co).map(([company,{discs,prices,tiers,skus}])=>({
+    company,...calcStats(discs),...priceAgg(prices),skus,
     tierAvg: Object.fromEntries(Object.entries(tiers).map(([t,a])=>[t,+(a.reduce((x,v)=>x+v,0)/a.length).toFixed(1)]))
   })).sort((a,b)=>b.avg-a.avg);
-  const brandStats = Object.entries(br).map(([brand,{discs,company,plt,skus}])=>({
-    brand,company,...calcStats(discs),skus,
+  const brandStats = Object.entries(br).map(([brand,{discs,prices,company,plt,skus}])=>({
+    brand,company,...calcStats(discs),...priceAgg(prices),skus,
     amazon:plt["Amazon"]||0, flipkart:plt["Flipkart"]||0
   })).sort((a,b)=>b.avg-a.avg);
   return {companyStats,brandStats};
@@ -542,6 +619,7 @@ async function doRefresh() {
 
   STATE.running = true;
   STATE.curr = null;
+  STATE.fromCache = false;
   STATE.view = null;
   STATE.insight = '';
   STATE.steps = BRANDS.map(b=>({brand:b.brand,company:b.company,status:'pending',count:0,error:''}));
@@ -624,6 +702,7 @@ function render() {
   else if (v.type==='brand')      renderBrand(v.data);
   else if (v.type==='tier')       renderTier();
   else if (v.type==='history')    renderHistory();
+  else if (v.type==='prices')     renderPrices();
   else if (v.type==='margin')      renderMarginIntel();
   else if (v.type==='admin')      renderAdmin();
 }
@@ -687,9 +766,9 @@ function renderDashboard() {
     document.getElementById('app').innerHTML = `<div class="fadein" style="text-align:center;padding:80px 20px;max-width:480px;margin:0 auto">
       <div style="font-size:13px;font-weight:600;color:#BA7517;letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px">Luggage Discount Intelligence</div>
       <div style="font-size:28px;font-weight:700;line-height:1.2;margin-bottom:10px">India E-Commerce<br>Pricing Dashboard</div>
-      <div style="font-size:14px;color:#9b9a96;margin-bottom:28px;line-height:1.6">Live discount intelligence for VIP Group, Safari Industries, Samsonite Group, HRX &amp; Uppercase — scraped directly from Amazon.in &amp; Flipkart category pages.</div>
+      <div style="font-size:14px;color:#9b9a96;margin-bottom:28px;line-height:1.6">Live discount &amp; price intelligence for VIP Group, Safari Industries, Samsonite Group, HRX, Uppercase &amp; Nasher Miles — scraped directly from Amazon.in &amp; Flipkart listing pages.</div>
       <button onclick="doRefresh()" style="background:#BA7517;color:#fff;border:none;padding:14px 36px;font-size:16px;font-weight:600;border-radius:10px;cursor:pointer">▶ Fetch Live Data</button>
-      <div style="font-size:11px;color:#c0bfbb;margin-top:16px">~2–3 minutes to fetch all 7 brands · Data as of today</div>
+      <div style="font-size:11px;color:#c0bfbb;margin-top:16px">~2–4 minutes to fetch all 10 brands · Data as of today</div>
     </div>`;
     return;
   }
@@ -799,6 +878,11 @@ function renderDashboard() {
     : renderInsight(insight);
 
   document.getElementById('app').innerHTML = `<div class="fadein">
+    ${STATE.fromCache ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#FFF7E6;border:1px solid #f0d9a8;border-radius:10px;padding:10px 14px;margin-bottom:16px">
+      <span style="font-size:16px">📁</span>
+      <span style="font-size:12px;color:#7a4a00;line-height:1.5">Showing your <strong>last saved result</strong>${lastRefresh?` from ${lastRefresh.toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}`:''} — not a live scrape. Click <strong>Refresh Live Data</strong> for today's prices.</span>
+      <button onclick="doRefresh()" style="margin-left:auto;background:#BA7517;color:#fff;border:none;padding:7px 16px;font-size:12px;font-weight:600;border-radius:8px;cursor:pointer;white-space:nowrap">↻ Refresh Live Data</button>
+    </div>` : ''}
     <!-- Header -->
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;flex-wrap:wrap;gap:12px">
       <div>
@@ -812,6 +896,7 @@ function renderDashboard() {
         <div style="font-size:11px;color:#b0afa9;margin-top:2px">Discount = (MRP − Selling) ÷ MRP × 100 · ${TODAY}</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button onclick="navigate({type:'prices'})" style="font-size:12px;background:#f0ede8;border-color:rgba(26,26,24,0.15)">💰 Price Tracker</button>
         <button onclick="navigate({type:'margin'})" style="font-size:12px;background:#f0ede8;border-color:rgba(26,26,24,0.15)">📊 Margin Intelligence</button>
         ${history.length>=1?`<button onclick="navigate({type:'history'})" style="font-size:12px">📈 Trend History (${history.length})</button>`:''}
         <button onclick="downloadDashboardExcel()" title="Download all dashboard data as Excel"
@@ -1473,6 +1558,205 @@ function renderHistory() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PRICE TRACKER TAB
+// Answers "what are selling prices across brands, and how are they moving?"
+//  • Average selling price per company and per brand (current scrape)
+//  • Top products + their current prices per brand
+//  • Average-price-over-time trend that BUILDS from each refresh (not retroactive:
+//    the tool reads live prices, so history only exists from when tracking started)
+// ─────────────────────────────────────────────────────────────────────────────
+function renderPrices() {
+  const curr = STATE.curr;
+  const COMPANIES = ['VIP Group','Safari Industries','Samsonite Group','HRX','Uppercase','Nasher Miles'];
+  const fmt = n => (n==null||isNaN(n)) ? '—' : '₹'+Math.round(n).toLocaleString('en-IN');
+  const avgSelling = skus => (skus && skus.length)
+    ? Math.round(skus.reduce((a,s)=>a+(s.selling||0),0)/skus.length) : null;
+
+  if (!curr) {
+    document.getElementById('app').innerHTML = `<div class="fadein">
+      <div class="back-bar" style="border-bottom:2px solid #e8e5e0;margin-bottom:20px">
+        <button onclick="navigate(null)">← Dashboard</button>
+        <span style="font-size:18px;font-weight:700">💰 Price Tracker</span>
+      </div>
+      <div style="text-align:center;padding:60px 20px;color:#9b9a96;font-size:14px">
+        No price data yet — click <strong>▶ Fetch Live Data</strong> on the dashboard to pull current prices.
+      </div></div>`;
+    return;
+  }
+
+  // Per-company average selling price (computed from SKUs so it also works for
+  // older saved snapshots that predate the avgPrice field).
+  const companyRows = COMPANIES.map(co => {
+    const cs = curr.companyStats.find(c => c.company === co);
+    const skus = (cs && cs.skus) || [];
+    return { co, avg: avgSelling(skus), count: skus.length,
+             min: skus.length ? Math.min(...skus.map(s=>s.selling)) : null,
+             max: skus.length ? Math.max(...skus.map(s=>s.selling)) : null };
+  }).filter(r => r.count > 0).sort((a,b)=>b.avg-a.avg);
+
+  // Per-brand rows
+  const brandRows = (curr.brandStats || []).map(b => {
+    const skus = b.skus || [];
+    return { brand:b.brand, company:b.company, avg:avgSelling(skus), count:skus.length,
+             min: skus.length ? Math.min(...skus.map(s=>s.selling)) : null,
+             max: skus.length ? Math.max(...skus.map(s=>s.selling)) : null,
+             amazon:b.amazon||0, flipkart:b.flipkart||0, skus };
+  }).sort((a,b)=> (b.avg||0)-(a.avg||0));
+
+  // Price-over-time trend (uses saved avgPrice, falls back to computing from SKUs)
+  const h = STATE.history || [];
+  const snapAvg = (snap, company) => {
+    const cs = snap.stats && snap.stats.companyStats && snap.stats.companyStats.find(c=>c.company===company);
+    if (!cs) return null;
+    if (typeof cs.avgPrice === 'number' && cs.avgPrice > 0) return cs.avgPrice;
+    const ss = cs.skus || [];
+    return ss.length ? Math.round(ss.reduce((a,s)=>a+(s.selling||0),0)/ss.length) : null;
+  };
+  const hasTrend = h.length >= 2;
+
+  // Top products + prices per brand (shown in marketplace order as scraped)
+  const topBlocks = brandRows.filter(b=>b.count>0).map(b => {
+    const col = COL[b.company]||'#888', bg = BG[b.company]||'#f7f6f3', txt = TXT[b.company]||'#333';
+    const top = b.skus.slice(0,5);
+    return `<div class="card" style="padding:14px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+        <div style="font-size:14px;font-weight:700">${b.brand}
+          <span class="badge" style="background:${bg};color:${txt};margin-left:6px">${b.company.split(' ')[0]}</span></div>
+        <div style="font-size:11px;color:#9b9a96">avg <strong style="color:${col}">${fmt(b.avg)}</strong> · ${fmt(b.min)}–${fmt(b.max)} · ${b.count} SKUs</div>
+      </div>
+      <table style="width:100%;font-size:12px;table-layout:fixed">
+        <thead><tr style="color:#9b9a96;font-size:9px;text-transform:uppercase;letter-spacing:.04em;border-bottom:0.5px solid rgba(26,26,24,0.15)">
+          <th style="text-align:left;padding:5px 6px">Product</th>
+          <th style="text-align:right;padding:5px 6px;width:62px">MRP</th>
+          <th style="text-align:right;padding:5px 6px;width:66px">Selling</th>
+          <th style="text-align:right;padding:5px 6px;width:42px">Off</th>
+          <th style="text-align:left;padding:5px 6px;width:58px">Site</th>
+        </tr></thead>
+        <tbody>
+          ${top.map(s=>`<tr style="border-bottom:0.5px solid rgba(26,26,24,0.06)">
+            <td style="padding:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${s.url||'#'}" target="_blank" rel="noopener" title="${(s.name||'').replace(/"/g,'')}" style="color:#1a1a18;text-decoration:none">${(s.name||'').slice(0,52)}</a></td>
+            <td style="padding:6px;text-align:right;color:#b0afa9;text-decoration:line-through">${fmt(s.mrp)}</td>
+            <td style="padding:6px;text-align:right;font-weight:700;color:${col}">${fmt(s.selling)}</td>
+            <td style="padding:6px;text-align:right;color:#991b1b">${s.discount}%</td>
+            <td style="padding:6px;color:#9b9a96">${s.platform}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  const brandTableRows = brandRows.filter(b=>b.count>0).map(b=>{
+    const col = COL[b.company]||'#888';
+    return `<tr style="border-bottom:0.5px solid rgba(26,26,24,0.07)">
+      <td style="padding:8px 10px;font-weight:600">${b.brand}<div style="font-size:10px;color:#9b9a96;font-weight:400">${b.company}</div></td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;color:${col}">${fmt(b.avg)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#5f5e5a">${fmt(b.min)} – ${fmt(b.max)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#9b9a96">${b.count}</td>
+      <td style="padding:8px 10px;text-align:right;color:#9b9a96;font-size:11px">${b.amazon}A / ${b.flipkart}F</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('app').innerHTML = `<div class="fadein">
+    <div class="back-bar" style="border-bottom:2px solid #e8e5e0;margin-bottom:16px">
+      <button onclick="navigate(null)">← Dashboard</button>
+      <div>
+        <div style="font-size:20px;font-weight:700">💰 Price Tracker</div>
+        <div style="font-size:12px;color:#9b9a96;margin-top:2px">Selling prices across brands${STATE.lastRefresh?` · as of ${new Date(STATE.lastRefresh).toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}`:''}</div>
+      </div>
+    </div>
+
+    <div style="background:#E6F1FB;border:1px solid #bcd9f5;border-radius:10px;padding:12px 16px;margin-bottom:20px;font-size:12px;color:#0c447c;line-height:1.6">
+      <strong>How to read this:</strong> these are <strong>current live selling prices</strong> pulled from Amazon.in &amp; Flipkart. The
+      <strong>price-over-time</strong> chart below builds up from each refresh you run — it starts from when tracking began, so it is not a
+      backfilled 12-month history. For a true last-1-year price history we would need a historical price-data source (details with your team).
+    </div>
+
+    <!-- Average selling price by company -->
+    <div class="card card-pad" style="margin-bottom:16px">
+      <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:14px">Average Selling Price by Company</div>
+      <div style="position:relative;height:${Math.max(160, companyRows.length*42)}px"><canvas id="price-company-chart"></canvas></div>
+    </div>
+
+    <!-- Average selling price by brand -->
+    <div class="card" style="overflow:hidden;margin-bottom:16px">
+      <div style="padding:12px 15px 8px;font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase">Average Selling Price by Brand</div>
+      <table style="width:100%">
+        <thead><tr style="border-bottom:0.5px solid rgba(26,26,24,0.18);font-size:10px;color:#9b9a96;text-transform:uppercase;letter-spacing:.04em">
+          <th style="text-align:left;padding:8px 10px">Brand</th>
+          <th style="text-align:right;padding:8px 10px">Avg Selling</th>
+          <th style="text-align:right;padding:8px 10px">Price Range</th>
+          <th style="text-align:right;padding:8px 10px">SKUs</th>
+          <th style="text-align:right;padding:8px 10px">Amzn/Flpkt</th>
+        </tr></thead>
+        <tbody>${brandTableRows || `<tr><td style="padding:14px;color:#9b9a96">No data</td></tr>`}</tbody>
+      </table>
+    </div>
+
+    <!-- Price over time -->
+    <div class="card card-pad" style="margin-bottom:16px">
+      <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Average Selling Price — Over Time</div>
+      <div style="font-size:11px;color:#9b9a96;margin-bottom:12px">Each point = one refresh. ${hasTrend?'Builds a real price trend as you refresh over days/weeks.':'Run <strong>Refresh Live Data</strong> again (another day) to start the trend — one run is not a trend yet.'}</div>
+      ${hasTrend?`<div style="position:relative;height:260px"><canvas id="price-trend-chart"></canvas></div>`:''}
+    </div>
+
+    <!-- Top products & prices per brand -->
+    <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px">Top Products &amp; Current Prices — by Brand</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px">
+      ${topBlocks || `<div style="color:#9b9a96;font-size:13px">No products in the latest scrape.</div>`}
+    </div>
+  </div>`;
+
+  waitForChart(() => {
+    // Average selling price by company (horizontal bars)
+    mkChart('price-company-chart', {
+      type: 'bar',
+      data: {
+        labels: companyRows.map(r => r.co.split(' ')[0]),
+        datasets: [{
+          data: companyRows.map(r => r.avg),
+          backgroundColor: companyRows.map(r => COL[r.co] || '#888'),
+          borderRadius: 4, borderSkipped: 'left',
+        }]
+      },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ' ₹'+Number(c.raw).toLocaleString('en-IN')+' avg selling price' } } },
+        scales: {
+          x: { grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => '₹'+Number(v).toLocaleString('en-IN'), font: { size: 10 }, color: '#9b9a96' } },
+          y: { grid: { display: false }, ticks: { font: { size: 11 }, color: '#1a1a18' } }
+        }
+      }
+    });
+
+    if (hasTrend) {
+      mkChart('price-trend-chart', {
+        type: 'line',
+        data: {
+          labels: h.map(s => s.label),
+          datasets: COMPANIES.map(co => ({
+            label: co.split(' ')[0],
+            data: h.map(s => snapAvg(s, co)),
+            borderColor: COL[co], backgroundColor: COL[co] + '18',
+            borderWidth: 2, tension: 0.3, pointRadius: 3, spanGaps: true,
+          }))
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'top', labels: { font: { size: 11 }, usePointStyle: true, boxWidth: 8 } },
+            tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.raw!=null?'₹'+Number(c.raw).toLocaleString('en-IN'):'no data'}` } }
+          },
+          scales: {
+            x: { grid: { display: false }, ticks: { font: { size: 10 }, color: '#9b9a96' } },
+            y: { grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => '₹'+Number(v).toLocaleString('en-IN'), font: { size: 10 }, color: '#9b9a96' } }
+          }
+        }
+      });
+    }
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MARGIN INTELLIGENCE TAB
 // Data lives in localStorage (key: ldi_margin_data) — no server, no D1, no database.
 // On first visit the data is seeded from MARGIN_SEED defaults in this file.
@@ -2082,402 +2366,6 @@ function renderMarginIntel(useCached = false) {
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// NOTE: Old hardcoded margin data block below — kept as reference comments only.
-// All live data is in localStorage (ldi_margin_data). See MARGIN_SEED above.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   DEAD_BLOCK_START — reference only, never executed.
-   This entire block is commented out. Do not uncomment.
-   ─────────────────────────────────────────────────────────────────────────────
-    {
-      company: 'VIP Group',
-      ticker: 'NSE: VIPIND',
-      type: 'listed',
-      grossMargin: 39, grossMarginPrev: 45, ebitdaMargin: -26, ebitdaMarginPrev: 8, netMargin: -35, revenue: 406, revenueGrowth: -25,// __TB1
-      period: 'Q3 FY26 (Jan 2026)',
-      source: 'NSE filings · AlphaStreet · MarketsMojo',
-      sourceUrl: 'https://alphastreet.com/india/vip-industries-q2-fy26-earnings-results/',
-      quarterlyGrossMargins: [
-        { q: 'Q1 FY25', gm: 42 },
-        { q: 'Q2 FY25', gm: 40 },
-        { q: 'Q3 FY25', gm: 38 },
-        { q: 'Q4 FY25', gm: 37 },
-        { q: 'Q1 FY26', gm: 36 },
-        { q: 'Q2 FY26', gm: 35 },
-        { q: 'Q3 FY26', gm: 34 },
-      ],
-      notes: 'Revenue down 25% YoY. Expenses exceed revenue — every ₹1 of sales costs ₹1.39 to deliver. Gross margin has compressed ~11 points over 2 years. Management change underway.',
-    },
-    {
-      company: 'Safari Industries',
-      ticker: 'NSE: SAFARI',
-      type: 'listed',
-      grossMargin: 47, grossMarginPrev: 50, ebitdaMargin: 15, ebitdaMarginPrev: 18, netMargin: 9.5, revenue: 528, revenueGrowth: 17,// __TB2
-      period: 'Q3 FY26 (Jan 2026)',
-      source: 'NSE filings · AlphaStreet · MarketsMojo',
-      sourceUrl: 'https://alphastreet.com/india/safari-industries-india-ltd-q1-fy26-earnings-results-14-rise-in-profits/',
-      quarterlyGrossMargins: [
-        { q: 'Q1 FY25', gm: 50 },
-        { q: 'Q2 FY25', gm: 49 },
-        { q: 'Q3 FY25', gm: 48 },
-        { q: 'Q4 FY25', gm: 47 },
-        { q: 'Q1 FY26', gm: 47 },
-        { q: 'Q2 FY26', gm: 46 },
-        { q: 'Q3 FY26', gm: 45 },
-      ],
-      notes: 'Revenue growing +17% YoY. EBITDA margins compressing as competition intensifies. Volume-first strategy sacrificing some margin. Still profitable and well-capitalised.',
-    },
-    {
-      company: 'Samsonite Group',
-      ticker: 'HKEx: 1910',
-      type: 'listed',
-      grossMargin: 60, grossMarginPrev: 59, ebitdaMargin: 19, ebitdaMarginPrev: 19, netMargin: 10, revenue: 1769, revenueGrowth: -0.4,// __TB3
-      period: 'H1 2024 (Jun 2024)',
-      source: 'Samsonite H1 2024 Interim Report · HKEx filing',
-      sourceUrl: 'https://corporate.samsonite.com/en/annual-and-interim-reports.html',
-      quarterlyGrossMargins: [
-        { q: 'H1 2022', gm: 55 },
-        { q: 'H2 2022', gm: 57 },
-        { q: 'H1 2023', gm: 59 },
-        { q: 'H2 2023', gm: 59 },
-        { q: 'H1 2024', gm: 60 },
-      ],
-      notes: 'Gross margin at multi-year high of 60.2%. Globally positioned as premium luggage group. EBITDA margin stable at ~19%. Revenue nominally flat but growing ex-FX. Strong balance sheet.',
-    },
-    {
-      company: 'HRX',
-      ticker: 'Private — Myntra (51%) + Hrithik Roshan',
-      type: 'private',
-      grossMargin: 52, grossMarginPrev: 52, ebitdaMargin: 12, ebitdaMarginPrev: 10, netMargin: 8, revenue: 200, revenueGrowth: 15,// __TB4
-      period: 'FY24 (estimated)',
-      source: 'Mint (Sep 2024) · Hindustan Times · Arthnova · Entrackr — no public P&L',
-      sourceUrl: 'https://www.hindustantimes.com/entertainment/bollywood/hrithik-roshans-hrx-is-a-rs-1000-crore-juggernaut',
-      quarterlyGrossMargins: [
-        { q: 'FY22', gm: 48 },
-        { q: 'FY23', gm: 50 },
-        { q: 'FY24', gm: 52 },
-      ],
-      notes: 'No audited public P&L. Gross margin estimated from comparable celebrity-backed Indian lifestyle brands. Myntra handles fulfillment — cost structure relatively lean. Primarily apparel; luggage is a small sub-category.',
-      isEstimated: true,
-    },
-    {
-      company: 'Uppercase',
-      ticker: 'Private — Sixth Sense Ventures · Jasprit Bumrah (investor)',
-      type: 'private',
-      grossMargin: 43, grossMarginPrev: 38, ebitdaMargin: -15, ebitdaMarginPrev: -22, netMargin: -18, revenue: 83, revenueGrowth: 500,// __TB5
-      period: 'FY24 (estimated)',
-      source: 'Entrackr (Sep 2024) · YourStory (Jul 2024) · Indian Retailer — no public P&L',
-      sourceUrl: 'https://entrackr.com/2024/09/three-year-old-luggage-brand-uppercases-revenue-zooms-6x-to-rs-62-cr/',
-      quarterlyGrossMargins: [
-        { q: 'FY22', gm: 32 },
-        { q: 'FY23', gm: 38 },
-        { q: 'FY24', gm: 43 },
-      ],
-      notes: 'Pre-profitability growth-stage brand. Targeting breakeven by FY27. Revenue growing rapidly but burning cash on distribution and marketing. Sustainable materials positioning commands slight premium.',
-      isEstimated: true,
-    },
-    {
-      company: 'Nasher Miles',
-      ticker: 'Private — Seed/Series A · $4M raised',
-      type: 'private',
-      grossMargin: 38, grossMarginPrev: 32, ebitdaMargin: -10, ebitdaMarginPrev: -18, netMargin: -12, revenue: 150, revenueGrowth: 300,// __TB6
-      period: 'FY24 (estimated)',
-      source: 'Financial Express · Inc42 · Indian Startup News — no public P&L',
-      sourceUrl: 'https://www.financialexpress.com/business/brandwagon-from-rs-2-crore-to-rs-150-crore-nasher-miles-bets-big-on-quick-commerce-demand-4061328/',
-      quarterlyGrossMargins: [
-        { q: 'FY22', gm: 28 },
-        { q: 'FY23', gm: 32 },
-        { q: 'FY24', gm: 38 },
-      ],
-// TOMBSTONE_MID_MARKER
-  const liveData_DEAD = null;
-
-  const companies = MARGIN_DATA.map(m => {
-    const live = liveData.find(c => c.company === m.company);
-    const liveDiscount = live ? live.avg : null;
-    const liveSkus = live ? live.count : 0;
-
-    // ── The core classification: is discounting eating margins? ──
-    // Key insight: if a brand discounts at X% from MRP, the implied cost to margin
-    // depends on the channel MRP inflation. We compare:
-    //   a) Gross margin trend (quarterly): compressing vs stable vs expanding
-    //   b) Discount level vs gross margin: headroom or collision
-    //   c) Revenue trend: growing (volume strategy) or shrinking (distress signal)
-
-    const discountToMarginGap = liveDiscount != null ? m.grossMargin - liveDiscount : null;
-    const marginTrend = m.grossMargin - m.grossMarginPrev; // positive = improving
-    const qMargins = m.quarterlyGrossMargins;
-    const marginCompressing = qMargins.length >= 2 && (qMargins[qMargins.length-1].gm < qMargins[0].gm);
-    const compressionPts = qMargins.length >= 2 ? qMargins[0].gm - qMargins[qMargins.length-1].gm : 0;
-
-    // Classification rules (in priority order):
-    let signal, signalColor, signalBg, interpretation, actionNote;
-
-    if (liveDiscount == null) {
-      signal = '⚪ No Live Data';
-      signalColor = '#9b9a96'; signalBg = '#f7f6f3';
-      interpretation = 'Run a refresh to get live discount data for this company.';
-      actionNote = 'Fetch live data first.';
-    } else if (m.ebitdaMargin < 0 && liveDiscount >= 65 && marginCompressing) {
-      // Negative EBITDA + deep discounts + compressing margins = liquidation
-      signal = '🔻 Liquidation Signal';
-      signalColor = '#991b1b'; signalBg = '#FEE2E2';
-      interpretation = `Gross margins have compressed ${compressionPts} points while discounts run at ${liveDiscount}%. EBITDA is negative (${m.ebitdaMargin}%). Discounting is actively destroying margin — this is a distress-driven clearance, not a marketing tactic.`;
-      actionNote = 'Flag for further diligence. Inventory liquidation likely. Revenue decline confirms demand weakness.';
-    } else if (liveDiscount >= 55 && marginCompressing && m.revenueGrowth <= 0) {
-      // High discounts + compressing margins + no revenue growth = structural issue
-      signal = '🟠 Margin Distress';
-      signalColor = '#c05621'; signalBg = '#FFFAF0';
-      interpretation = `Deep discounting (${liveDiscount}%) alongside gross margin compression (${Math.abs(compressionPts)} pts) and stagnant/declining revenue is a structural warning sign. Discounting is not generating volume recovery — a distress pattern.`;
-      actionNote = 'Watch for further deterioration. Exit channel strategy may be underway.';
-    } else if (liveDiscount >= 50 && m.grossMargin >= 45 && !marginCompressing) {
-      // High discounts BUT margins stable = deliberate marketing tactic
-      signal = '📣 Marketing Tactic';
-      signalColor = '#1a5c42'; signalBg = '#E1F5EE';
-      interpretation = `High online discounting (${liveDiscount}%) but gross margins remain stable at ${m.grossMargin}%. The brand is using elevated MRPs as an anchor, then discounting to drive e-commerce velocity. Margin is intact — this is deliberate channel strategy, not distress.`;
-      actionNote = 'No margin concern currently. Monitor whether discounting accelerates or if gross margins begin slipping.';
-    } else if (liveDiscount >= 50 && m.grossMargin >= 45 && marginCompressing && m.revenueGrowth > 10) {
-      // High discounts + slight compression BUT revenue growing = growth investment
-      signal = '📈 Growth Push';
-      signalColor = '#5b21b6'; signalBg = '#F3E8FF';
-      interpretation = `Discounting (${liveDiscount}%) is fuelling strong revenue growth (${m.revenueGrowth}% YoY). Gross margins are compressing slightly (-${compressionPts} pts) as a deliberate investment in market share. Classic growth-phase playbook.`;
-      actionNote = 'Healthy if trajectory leads to breakeven. Monitor for inflection point where discounting normalises.';
-    } else if (liveDiscount <= 45 && m.grossMargin >= 55 && !marginCompressing) {
-      // Low discounts + high stable margins = premium hold
-      signal = '🏆 Premium Hold';
-      signalColor = '#2a6011'; signalBg = '#EAF3DE';
-      interpretation = `Low-moderate discounting (${liveDiscount}%) with gross margins at ${m.grossMargin}% — well above sector. The brand is protecting pricing integrity and margin. Premium positioning intact.`;
-      actionNote = 'Strongest margin position in the sector. Pricing power intact.';
-    } else if (liveDiscount <= 45 && m.grossMargin >= 40) {
-      signal = '⚖️ Selective Promoter';
-      signalColor = '#7a4a00'; signalBg = '#FFF7E6';
-      interpretation = `Moderate discounting (${liveDiscount}%) with reasonable gross margins (${m.grossMargin}%). Targeted promotional activity without a systemic margin problem. Selective discounting by tier or channel.`;
-      actionNote = 'Stable positioning. Not a red flag, but monitor for escalation.';
-    } else if (m.grossMargin < 45 && liveDiscount >= 60) {
-      signal = '⚠️ Headroom Warning';
-      signalColor = '#b45309'; signalBg = '#FEF3C7';
-      interpretation = `Gross margin (${m.grossMargin}%) is relatively thin while discounts run at ${liveDiscount}%. The headroom between gross margin and discount level is dangerously narrow. Any further compression would threaten cash contribution.`;
-      actionNote = 'Elevated watch. If gross margins slip below ${liveDiscount - 5}%, the brand is operating at negative contribution margin on discounted items.';
-    } else {
-      signal = '🟡 Under Observation';
-      signalColor = '#7a4a00'; signalBg = '#FFF7E6';
-      interpretation = `Mixed signals — discounting at ${liveDiscount}% with gross margins of ${m.grossMargin}%. No immediate alarm, but the gap between discount intensity and margin health warrants continued monitoring.`;
-      actionNote = 'Continue monitoring. Classify on next available quarterly filing.';
-    }
-
-    // Calculate the discount headroom: gross margin minus live discount
-    const headroom = liveDiscount != null ? m.grossMargin - liveDiscount : null;
-    const headroomLabel = headroom == null ? '—' : headroom > 20 ? `+${headroom} pts (comfortable)` : headroom > 5 ? `+${headroom} pts (watch)` : headroom > 0 ? `+${headroom} pts (thin)` : `${headroom} pts (danger)`;
-    const headroomColor = headroom == null ? '#9b9a96' : headroom > 20 ? '#2a6011' : headroom > 5 ? '#7a4a00' : headroom > 0 ? '#c05621' : '#991b1b';
-
-    return { ...m, liveDiscount, liveSkus, signal, signalColor, signalBg, interpretation, actionNote, headroom, headroomLabel, headroomColor, marginCompressing, compressionPts };
-  });
-
-  // ── Render ──
-  const hasLive = liveData.length > 0;
-
-  document.getElementById('app').innerHTML = `<div class="fadein">
-    <div class="back-bar" style="border-bottom:2px solid #e8e5e0;margin-bottom:20px">
-      <button onclick="navigate(null)">← Dashboard</button>
-      <div>
-        <div style="font-size:20px;font-weight:700">📊 Margin Intelligence</div>
-        <div style="font-size:12px;color:#9b9a96;margin-top:2px">Discount data married with gross margins · Listed co. data from quarterly filings · Private co. data estimated from best available sources</div>
-      </div>
-    </div>
-
-    ${!hasLive ? `<div style="background:#FFF7E6;border:1px solid #f59e0b;border-radius:12px;padding:16px 18px;margin-bottom:20px;display:flex;align-items:flex-start;gap:12px">
-      <span style="font-size:20px;line-height:1">⚠️</span>
-      <div>
-        <div style="font-size:13px;font-weight:700;color:#7a4a00;margin-bottom:4px">No live discount data yet</div>
-        <div style="font-size:12px;color:#5f5e5a;line-height:1.6">Run a refresh from the dashboard to fetch live discount data. The margin analysis will then show the full discount vs. margin picture. Margin data below is from public filings and is always available.</div>
-        <button onclick="navigate(null)" style="margin-top:8px;background:#f59e0b;color:#fff;border:none;font-weight:600;padding:6px 14px;border-radius:8px;font-size:12px">Go to Dashboard →</button>
-      </div>
-    </div>` : ''}
-
-    <!-- Data freshness notice -->
-    <div style="background:#E6F1FB;border-radius:10px;padding:12px 16px;margin-bottom:20px;font-size:12px;color:#0C447C;line-height:1.7">
-      <strong>Data sources & freshness:</strong>
-      VIP Industries & Safari Industries: NSE quarterly filings (Q3 FY26, Jan 2026) · 
-      Samsonite Group: HKEx interim report (H1 2024, Aug 2024) · 
-      HRX, Uppercase, Nasher Miles: estimated from funding disclosures, revenue reports, and comparable brand analysis — 
-      <em>no audited P&amp;L available for private companies.</em>
-      ${hasLive ? ` Live discount data: scraped ${new Date(STATE.lastRefresh).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}.` : ''}
-    </div>
-
-    <!-- Main company cards -->
-    ${companies.map(co => {
-      const col = COL[co.company], bg = BG[co.company], txt = TXT[co.company];
-      const qLabels = co.quarterlyGrossMargins.map(q => q.q);
-      const qValues = co.quarterlyGrossMargins.map(q => q.gm);
-
-      return `
-      <div class="card" style="overflow:hidden;margin-bottom:18px">
-        <!-- Company header -->
-        <div style="padding:16px 20px 14px;border-bottom:0.5px solid rgba(26,26,24,0.1);background:linear-gradient(135deg,${col}12 0%,${col}06 100%)">
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
-            <div>
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
-                <span style="width:10px;height:10px;border-radius:50%;background:${col};flex-shrink:0"></span>
-                <span style="font-size:18px;font-weight:700;color:#1a1a18">${co.company}</span>
-                <span style="font-size:10px;padding:2px 8px;border-radius:5px;background:${bg};color:${txt};font-weight:600">${co.ticker}</span>
-                ${co.isEstimated ? `<span style="font-size:9px;padding:2px 7px;border-radius:5px;background:#FFF7E6;color:#b45309;border:1px solid #f59e0b44;font-weight:700">ESTIMATED</span>` : `<span style="font-size:9px;padding:2px 7px;border-radius:5px;background:#EAF3DE;color:#2a6011;border:1px solid #4a9a2244;font-weight:700">AUDITED</span>`}
-              </div>
-              <div style="font-size:11px;color:#9b9a96">${co.period} · Source: ${co.source}</div>
-            </div>
-            <!-- Signal badge -->
-            <div style="padding:10px 16px;border-radius:12px;background:${co.signalBg};border:1px solid ${co.signalColor}33;text-align:center;flex-shrink:0">
-              <div style="font-size:13px;font-weight:700;color:${co.signalColor}">${co.signal}</div>
-              <div style="font-size:10px;color:#9b9a96;margin-top:2px">${co.liveDiscount != null ? co.liveDiscount+'% live discount' : 'No live data'}</div>
-            </div>
-          </div>
-        </div>
-
-        <div style="padding:18px 20px">
-          <!-- KPI row -->
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:18px">
-            <div style="background:#f7f6f3;border-radius:10px;padding:11px 13px">
-              <div style="font-size:10px;color:#9b9a96;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Gross Margin</div>
-              <div style="font-size:24px;font-weight:700;color:${col};line-height:1">${co.grossMargin}%</div>
-              <div style="font-size:10px;color:${co.grossMargin > co.grossMarginPrev ? '#2a6011' : '#991b1b'};margin-top:3px">
-                ${co.grossMargin > co.grossMarginPrev ? '▲' : '▼'} ${Math.abs(co.grossMargin - co.grossMarginPrev)} pts vs prior
-              </div>
-            </div>
-            <div style="background:#f7f6f3;border-radius:10px;padding:11px 13px">
-              <div style="font-size:10px;color:#9b9a96;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">EBITDA Margin</div>
-              <div style="font-size:24px;font-weight:700;color:${co.ebitdaMargin < 0 ? '#991b1b' : col};line-height:1">${co.ebitdaMargin}%</div>
-              <div style="font-size:10px;color:${co.ebitdaMargin > co.ebitdaMarginPrev ? '#2a6011' : '#991b1b'};margin-top:3px">
-                ${co.ebitdaMargin > co.ebitdaMarginPrev ? '▲' : '▼'} ${Math.abs(+(co.ebitdaMargin - co.ebitdaMarginPrev).toFixed(1))} pts vs prior
-              </div>
-            </div>
-            <div style="background:#f7f6f3;border-radius:10px;padding:11px 13px">
-              <div style="font-size:10px;color:#9b9a96;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Live Discount</div>
-              <div style="font-size:24px;font-weight:700;color:${co.liveDiscount != null ? col : '#9b9a96'};line-height:1">${co.liveDiscount != null ? co.liveDiscount+'%' : '—'}</div>
-              <div style="font-size:10px;color:#9b9a96;margin-top:3px">${co.liveSkus > 0 ? co.liveSkus+' SKUs live' : 'no live data'}</div>
-            </div>
-            <div style="background:${co.headroomColor === '#991b1b' ? '#FEE2E2' : co.headroomColor === '#c05621' ? '#FFFAF0' : '#f7f6f3'};border-radius:10px;padding:11px 13px;border:1px solid ${co.headroomColor}22">
-              <div style="font-size:10px;color:#9b9a96;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Margin Headroom</div>
-              <div style="font-size:15px;font-weight:700;color:${co.headroomColor};line-height:1.2;margin-top:2px">${co.headroomLabel}</div>
-              <div style="font-size:10px;color:#9b9a96;margin-top:3px">gross margin minus live discount</div>
-            </div>
-          </div>
-
-          <!-- Interpretation block -->
-          <div style="padding:14px 16px;border-radius:12px;background:${co.signalBg};border-left:4px solid ${co.signalColor};margin-bottom:16px">
-            <div style="font-size:11px;font-weight:700;color:${co.signalColor};text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${co.signal}</div>
-            <div style="font-size:13px;color:#1a1a18;line-height:1.7;margin-bottom:8px">${co.interpretation}</div>
-            <div style="font-size:11px;color:#5f5e5a;font-style:italic;padding-top:6px;border-top:0.5px solid ${co.signalColor}33">💼 Action note: ${co.actionNote}</div>
-          </div>
-
-          <!-- Gross margin trend mini chart -->
-          <div style="margin-bottom:14px">
-            <div style="font-size:10px;font-weight:600;color:#9b9a96;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Gross Margin Trend</div>
-            <div style="position:relative;height:90px"><canvas id="mg-${co.company.replace(/ /g,'-')}"></canvas></div>
-          </div>
-
-          <!-- Notes -->
-          <div style="font-size:11px;color:#9b9a96;line-height:1.6;padding-top:10px;border-top:0.5px solid rgba(26,26,24,0.08)">
-            <strong style="color:#5f5e5a">Context:</strong> ${co.notes}
-            ${co.isEstimated ? ' <em style="color:#b45309">(⚠ Estimated — no audited public P&L available. Treat as directional only.)</em>' : ''}
-          </div>
-        </div>
-      </div>`;
-    }).join('')}
-
-    <!-- Sector comparison chart -->
-    <div class="card card-pad" style="margin-bottom:16px">
-      <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:14px">Sector Overview — Gross Margin vs. Live Discount</div>
-      <div style="position:relative;height:280px"><canvas id="mg-sector-chart"></canvas></div>
-      <div style="margin-top:10px;font-size:11px;color:#9b9a96">Grey bars = gross margin (from filings). Coloured bars = live discount (scraped today). The gap between them is the margin headroom.</div>
-    </div>
-
-    <!-- Methodology note -->
-    <div class="card card-pad" style="border-left:3px solid #185FA5;margin-bottom:8px">
-      <div style="font-size:11px;font-weight:700;color:#0C447C;letter-spacing:.07em;text-transform:uppercase;margin-bottom:10px">📌 Methodology & Caveats</div>
-      <div style="font-size:12px;color:#5f5e5a;line-height:1.9">
-        <strong>Marketing Tactic vs. Liquidation Signal:</strong> If a brand discounts heavily online but gross margins remain stable quarter-on-quarter, the discounting is a deliberate e-commerce channel strategy — anchor MRPs are set high, then discounted to appear competitive. If gross margins are simultaneously compressing while discounts run deep and revenue is declining, the discount is consuming real margin — a distress or liquidation signal.<br>
-        <strong>Gross Margin:</strong> (Revenue − Cost of Goods Sold) ÷ Revenue. Does not include SG&amp;A, distribution, or marketing spend.<br>
-        <strong>EBITDA Margin:</strong> Earnings before interest, tax, depreciation, and amortisation — closest to operating cash profitability.<br>
-        <strong>Margin Headroom:</strong> Gross margin % minus live discount %. If negative, the brand may be selling below the cost of goods on some products (accounting for channel fees, returns, and SG&amp;A allocation).<br>
-        <strong>Private company estimates:</strong> HRX, Uppercase, and Nasher Miles are private. Estimates derived from: (1) reported revenue/funding data, (2) comparable listed Indian D2C/lifestyle brands, (3) analyst commentary in business press. Treat as directional.
-      </div>
-    </div>
-  </div>`;
-
-  waitForChart(() => {
-    // Per-company gross margin trend sparklines
-    companies.forEach(co => {
-      const col = COL[co.company];
-      mkChart(`mg-${co.company.replace(/ /g,'-')}`, {
-        type: 'line',
-        data: {
-          labels: co.quarterlyGrossMargins.map(q => q.q),
-          datasets: [{
-            data: co.quarterlyGrossMargins.map(q => q.gm),
-            borderColor: col,
-            backgroundColor: col + '22',
-            borderWidth: 2,
-            fill: true,
-            tension: 0.35,
-            pointRadius: 4,
-            pointBackgroundColor: col,
-            pointBorderColor: '#fff',
-            pointBorderWidth: 1.5,
-          }]
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: { callbacks: { label: ctx => ` ${ctx.raw}% gross margin` } }
-          },
-          scales: {
-            x: { grid: { display: false }, ticks: { font: { size: 9 }, color: '#9b9a96' } },
-            y: { min: 0, max: 75, grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => v+'%', font: { size: 9 }, color: '#9b9a96' } }
-          }
-        }
-      });
-    });
-
-    // Sector comparison chart
-    const labels = companies.map(co => co.company.split(' ')[0]);
-    mkChart('mg-sector-chart', {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Gross Margin (filings)',
-            data: companies.map(co => co.grossMargin),
-            backgroundColor: companies.map(co => COL[co.company] + '55'),
-            borderColor: companies.map(co => COL[co.company]),
-            borderWidth: 2,
-            borderRadius: 5,
-            borderSkipped: false,
-          },
-          {
-            label: 'Live Discount (scraped)',
-            data: companies.map(co => co.liveDiscount),
-            backgroundColor: companies.map(co => co.liveDiscount ? COL[co.company] + 'cc' : 'transparent'),
-            borderColor: companies.map(co => COL[co.company]),
-            borderWidth: 1.5,
-            borderRadius: 5,
-            borderSkipped: false,
-            borderDash: [4,3],
-          }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: {
-          legend: { position: 'top', labels: { font: { size: 11 }, usePointStyle: true } },
-          tooltip: {
-            callbacks: {
-              label: ctx => ` ${ctx.dataset.label}: ${ctx.raw != null ? ctx.raw+'%' : 'no data'}`
-            }
-          }
-   DEAD_BLOCK_END ─────────────────────────────────────────────────────────── */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ADMIN PANEL — Ctrl+Shift+A (Cmd+Shift+A on Mac). Never shown to customers.
@@ -2488,12 +2376,12 @@ function renderAdmin() {
     <div class="card card-pad">
       <div style="font-size:14px;font-weight:700;margin-bottom:10px">How it works</div>
       <ul style="font-size:12px;color:#5f5e5a;line-height:2.2;padding-left:18px">
-        <li>Refresh → 7 brand fetches (VIP, Skybags, Carlton, Aristocrat, Safari, Samsonite, American Tourister)</li>
-        <li>Each brand: Firecrawl scrapes 2 listing pages (Amazon.in + Flipkart category/search pages)</li>
+        <li>Refresh → 10 brand fetches (VIP, Skybags, Carlton, Aristocrat, Safari, Samsonite, American Tourister, HRX, Uppercase, Nasher Miles)</li>
+        <li>Each brand: Firecrawl scrapes 2 listing pages (Amazon.in + Flipkart search/category pages)</li>
         <li>MRP and selling price extracted from the same listing page you click through to</li>
         <li>Discount % = (MRP − Selling) ÷ MRP × 100 — pure arithmetic from real page data</li>
         <li>Product links open the exact page that was scraped for that price</li>
-        <li>Run history tracked in memory — trend chart builds across refreshes</li>
+        <li>Run history saved to shared Cloudflare storage (/api/history) — trend + price charts build across refreshes for all viewers</li>
         <li>Today's date: ${TODAY}</li>
       </ul>
     </div>
@@ -2548,6 +2436,7 @@ function downloadDashboardExcel() {
   {
     const header = ['Company', 'Avg Discount %', 'Median %', 'Min %', 'Max %',
                     'P25 %', 'P75 %', 'Spread (Max−Min)', 'SKU Count',
+                    'Avg Selling ₹', 'Median Selling ₹', 'Min Selling ₹', 'Max Selling ₹',
                     'Tier <₹2k Avg %', 'Tier ₹2–6k Avg %', 'Tier >₹6k Avg %'];
     const rows   = [meta, [], header];
     if (curr) {
@@ -2556,6 +2445,7 @@ function downloadDashboardExcel() {
         c.p25, c.p75,
         +(c.max - c.min).toFixed(1),
         c.count,
+        c.avgPrice ?? '—', c.medianPrice ?? '—', c.minPrice ?? '—', c.maxPrice ?? '—',
         c.tierAvg?.['<₹2k']  ?? '—',
         c.tierAvg?.['₹2–6k'] ?? '—',
         c.tierAvg?.['>₹6k']  ?? '—',
@@ -2571,11 +2461,13 @@ function downloadDashboardExcel() {
   // ══════════════════════════════════════════════════════════
   {
     const header = ['Brand', 'Parent Company', 'Avg Discount %', 'Median %',
-                    'Min %', 'Max %', 'SKU Count', 'Amazon SKUs', 'Flipkart SKUs'];
+                    'Min %', 'Max %', 'Avg Selling ₹', 'Min Selling ₹', 'Max Selling ₹',
+                    'SKU Count', 'Amazon SKUs', 'Flipkart SKUs'];
     const rows   = [meta, [], header];
     if (curr) {
       curr.brandStats.forEach(b => rows.push([
         b.brand, b.company, b.avg, b.median, b.min, b.max,
+        b.avgPrice ?? '—', b.minPrice ?? '—', b.maxPrice ?? '—',
         b.count, b.amazon, b.flipkart,
       ]));
     } else {
@@ -2755,7 +2647,21 @@ document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key==='A'){e.preventDefault();navigate({type:'admin'});}
 });
 render();
-fetchServerHistory().then(h=>{ STATE.history=h; render(); });
+fetchServerHistory().then(h=>{
+  STATE.history = h;
+  // "Show me the last result": if saved runs exist but nothing has been scraped
+  // this session, display the most recent saved snapshot immediately instead of
+  // the empty "Fetch Live Data" screen. A banner marks it as a saved run.
+  if (!STATE.curr && Array.isArray(h) && h.length) {
+    const last = h[h.length - 1];
+    if (last && last.stats) {
+      STATE.curr        = last.stats;
+      STATE.lastRefresh = last.ts ? new Date(last.ts) : null;
+      STATE.fromCache   = true;
+    }
+  }
+  render();
+});
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" async crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer crossorigin="anonymous"></script>

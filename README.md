@@ -1,174 +1,106 @@
-# Luggage Discount Intelligence — India
-### 6 company groups · 10 brands · Live Amazon.in & Flipkart price scraping
+# Luggage Discount & Price Intelligence — India
+
+Live discount **and selling-price** intelligence for the Indian luggage market —
+**6 company groups · 10 brands · live Amazon.in & Flipkart scraping.**
+
+Brands tracked: VIP, Skybags, Carlton, Aristocrat (VIP Group) · Safari (Safari
+Industries) · Samsonite, American Tourister (Samsonite Group) · HRX · Uppercase ·
+Nasher Miles.
 
 ---
 
-## Completed Features
+## What it does
 
-### Core Dashboard
-- Live scraping of Amazon.in and Flipkart listing pages via Firecrawl API
-- 10 brands tracked: VIP, Skybags, Carlton, Aristocrat, Safari, Samsonite, American Tourister, HRX, Uppercase, Nasher Miles
-- 6 company groups with colour-coded analytics
-- Discount % = (MRP − Selling) ÷ MRP × 100, pure arithmetic, no modelling
-- Company summary cards with brand-positioning archetypes (Premium Hold / Selective Promoter / Market-Share Play / Liquidation Signal / Growth Push)
-- Avg discount bar chart by brand, discount distribution curves, price tier heatmap
+Open the dashboard and click **▶ Fetch Live Data**. It reads current Amazon.in and
+Flipkart listing pages for each brand, extracts MRP + selling price for every
+product, and builds:
 
-### Executive Summary (3 investor-ready cards)
-- Card 1: Market Archetype — who is playing what game
-- Card 2: Price Spectrum — entry price, top MRP, deepest cut per company
-- Card 3: Investor Signal — pricing momentum scorecard with plain-English takeaway
+- **Main dashboard** — avg discount by company/brand, distribution, price-tier heatmap,
+  company "strategy" cards, investor-style executive summary.
+- **💰 Price Tracker** — average selling price by company and brand, top products with
+  their current prices, and an average-price-over-time chart that builds up from each
+  refresh.
+- **📊 Margin Intelligence** — live discounts vs. each company's reported gross margins,
+  with a plain-English signal (Marketing Tactic / Liquidation / Premium Hold, etc.).
+- **📈 Trend History** — discount trend across refresh sessions (shared across viewers).
+- **Export Excel** — every view as a multi-sheet `.xlsx`.
 
-### Trend History Tab
-- Continuous line chart of company avg discount across refresh sessions
-- Per-brand sparkline grid (10 brands)
-- SKU count trend bar chart
-- Run log table with delta indicators
-
-### 📊 Margin Intelligence Tab (NEW)
-- Marries live discount data with quarterly-reported gross margins
-- Sources:
-  - VIP Industries: NSE filings, Q3 FY26 (audited)
-  - Safari Industries: NSE filings, Q3 FY26 (audited)
-  - Samsonite Group: HKEx interim report H1 2024 (audited, gross margin 60.2%)
-  - HRX, Uppercase, Nasher Miles: estimated from funding/revenue disclosures (clearly labelled ESTIMATED)
-- Classification: Marketing Tactic / Liquidation Signal / Margin Distress / Growth Push / Premium Hold / Selective Promoter / Headroom Warning
-- Classification logic: if gross margins are stable while discounts are high → Marketing Tactic. If gross margins are compressing + discounts are deep + revenue is declining → Liquidation Signal.
-- Sector comparison chart: gross margin (filings) vs live discount (scraped) side-by-side
-- Gross margin trend mini-charts per company
-- Margin headroom: gross margin minus live discount %
-- Full methodology and caveats block
-
-## Navigation
-| Button | View |
-|---|---|
-| (default) | Main Dashboard |
-| 📊 Margin Intelligence | Margin Intelligence Tab |
-| 📈 Trend History (N) | Trend History Tab |
-| Company card click | Company Detail |
-| Brand row click | Brand Detail |
-| Tier Heatmap click | Price Tier Detail |
-| Ctrl+Shift+A | Admin Panel |
-
-## Data Models
-- `STATE.curr`: current scrape stats (companyStats[], brandStats[], each with skus[])
-- `STATE.history`: array of snapshots (max 10), each with ts, label, stats, skuCount, per-company avg
-- `ldi_margin_data` (localStorage key): JSON array of 6 company margin records — stores grossMargin, ebitdaMargin, quarterlyGrossMargins, period, source, isEstimated, lastUpdated. Read/written entirely client-side via lsGetMargins()/lsSaveMargins(). No server or database required. Edit via the ✏️ icon in the Margin Intelligence tab — saves instantly to localStorage.
-
-## Not Yet Implemented
-- Persistent history across page reloads (session-only today)
-- Auto-ingestion of margin data from NSE/BSE filing APIs (currently manual update via ✏️)
-- Email/export of exec summary cards
-- Mobile-optimised layout for History and Margin tabs
+On load, the dashboard **shows the last saved result immediately** (with a banner) so
+you don't have to re-scrape just to see the latest numbers — click Refresh for live data.
 
 ---
 
-## Deployment Guide
-### No coding needed. Takes 10 minutes. Completely free.
+## How it's built (architecture)
+
+| Piece | File | Role |
+|---|---|---|
+| Front-end (single page) | `index.html` | All UI + charts. Scrapes Amazon/Flipkart **client-side** via the Firecrawl API, computes all stats in the browser. |
+| API / hosting | `worker.js` | Cloudflare Worker. Serves the static site and provides `/api/history` (shared refresh history). |
+| Shared history store | Cloudflare **KV** (`LUGGAGE_HISTORY_KV`) | Every refresh snapshot is saved here so the trend/price charts are shared across all viewers. |
+| Config | `wrangler.jsonc` | Worker + static-assets + KV binding config. |
+
+Scraping engine: **Firecrawl** (`api.firecrawl.dev`). Amazon and Flipkart use different
+page layouts, so `index.html` has a dedicated extractor for each:
+- **Amazon** — anchors on the price block (`₹selling … M.R.P: ₹mrp`), takes the product
+  name from the URL slug, matches the brand as a whole word, de-dupes by ASIN.
+- **Flipkart** — anchors on the product-name link and reads the nearby price block.
+
+Discount % = (MRP − Selling) ÷ MRP × 100 — pure arithmetic from real page data.
 
 ---
 
-## What you need to do (overview)
-1. Create a free GitHub account and upload the files there
-2. Connect GitHub to a free Vercel account — it auto-deploys
-3. Your dashboard is live at a permanent URL
+## Local development
+
+```bash
+npm install
+npm run dev        # wrangler dev — local preview at http://localhost:8787
+npm run deploy     # wrangler deploy — push to Cloudflare
+```
+
+The Firecrawl API key is currently embedded in `index.html` (client-side). See
+**Known limitations** below.
 
 ---
 
-## STEP 1 — Create a free GitHub account
+## One-time setup: auto-deploy on every GitHub push
 
-1. Go to **https://github.com**
-2. Click **Sign up** (top right)
-3. Enter your email, create a password, choose a username
-4. Verify your email — done
+Connect the repo once and every push to the default branch redeploys automatically —
+no manual `wrangler deploy` ever again.
 
----
+1. Push this repo to GitHub.
+2. In the **Cloudflare dashboard** → **Workers & Pages** → **Create** →
+   **Workers** → **Connect to Git**.
+3. Pick this GitHub repository and the branch to deploy (usually `main`).
+4. Build command: `npm run deploy` · Deploy command: (leave default / none) ·
+   Root directory: `/`.
+5. Save. Cloudflare now builds and deploys on every push to that branch.
 
-## STEP 2 — Create a new repository on GitHub
-
-A "repository" is just a folder on GitHub that holds your files.
-
-1. Once logged in to GitHub, click the **+** icon (top right corner)
-2. Click **New repository**
-3. Under **Repository name**, type: `luggage-dashboard`
-4. Make sure **Private** is selected (so only you can see the code)
-5. Scroll down, click the green **Create repository** button
-
----
-
-## STEP 3 — Upload your files to GitHub
-
-You need to upload these exact files from the Genspark File Explorer:
-- `index.html`
-- `vercel.json`
-- The `api` folder containing `fetch-brand.js` and `fetch-insight.js`
-
-**To upload:**
-
-1. On your new repository page, click **uploading an existing file** (you'll see this link in the middle of the page)
-2. Download the files from Genspark first:
-   - In Genspark, click **File Explorer** tab
-   - Download `index.html`, `vercel.json`
-3. Drag all files into the GitHub upload box
-4. For the `api` folder — you need to upload the files inside it. Click **choose your files**, navigate into the `api` folder, select both `fetch-brand.js` and `fetch-insight.js`
-   - GitHub will automatically create the `api/` folder structure
-5. At the bottom, click the green **Commit changes** button
+> One-time KV step (only if the history store isn't created yet):
+> `npx wrangler kv namespace create LUGGAGE_HISTORY_KV` and put the returned id in
+> `wrangler.jsonc`. The id already present in this repo is wired up; keep it unless you
+> re-create the namespace.
 
 ---
 
-## STEP 4 — Create a free Vercel account
+## Updating the margin data
 
-1. Go to **https://vercel.com**
-2. Click **Sign Up**
-3. Click **Continue with GitHub** — this connects your GitHub automatically
-4. Authorise Vercel to access your GitHub
-
----
-
-## STEP 5 — Deploy your dashboard on Vercel
-
-1. Once logged in to Vercel, click **Add New Project** (or **New Project**)
-2. You'll see your GitHub repositories listed — click **Import** next to `luggage-dashboard`
-3. On the next screen, don't change anything — just click the big **Deploy** button
-4. Wait about 60 seconds — Vercel will build and deploy
-5. You'll see a **Congratulations** screen with your live URL, something like:
-   ```
-   https://luggage-dashboard-abc123.vercel.app
-   ```
-6. Click that URL — your dashboard is live!
+Margin figures (gross margin, EBITDA, quarterly trend, source) are seeded in
+`index.html` (`MARGIN_SEED`) and stored per-browser in `localStorage`
+(`ldi_margin_data`). Update them live via the **✏️** icon on each card in the
+Margin Intelligence tab — changes save instantly. Bump `MARGIN_SEED_VERSION` in
+`index.html` when you change the built-in seed so existing users pick up the new figures.
 
 ---
 
-## STEP 6 — Test it works
+## Known limitations
 
-1. Open your Vercel URL
-2. Click **▶ Fetch Live Data**
-3. Wait 2–3 minutes
-4. You should see all 7 brands with live prices and charts
-
----
-
-## That's it — you're done!
-
-Share the Vercel URL with your customer. It will work every time they visit it and click Fetch.
-
----
-
-## If you ever need to update the dashboard
-
-1. Go to **https://github.com** → your `luggage-dashboard` repository
-2. Click on the file you want to update (e.g. `index.html`)
-3. Click the **pencil icon** (Edit) on the right
-4. Make changes
-5. Click **Commit changes**
-6. Vercel automatically redeploys within 30 seconds — your live URL updates instantly
-
----
-
-## Troubleshooting
-
-**"Function timed out"** — Genspark is taking too long. Just click Try Again.
-
-**"GS_KEY not set"** — This means the API key wasn't included. The key is already baked into the server files so this shouldn't happen. If it does, contact support.
-
-**Dashboard loads but shows no data** — Make sure you're on the Vercel URL (not the Genspark preview).
-# luggagedashboard
+- **Price history is not retroactive.** The tool reads *live* prices, so the
+  average-price-over-time chart builds from the moment tracking started — it is not a
+  backfilled 12-month history. A true last-1-year price history needs a historical
+  price-data source (e.g. Keepa for Amazon); not currently integrated.
+- **Firecrawl key is client-side.** The key in `index.html` is visible in page source.
+  For production it should move behind the Worker (a `/api/scrape` proxy with the key as
+  a Cloudflare secret). Flagged as a follow-up.
+- **Refresh is manual and sequential** (10 brands × 2 pages). A full refresh takes a few
+  minutes and spends Firecrawl credits each time.
+- Page-layout changes on Amazon/Flipkart can require the extractor to be updated.
