@@ -1521,7 +1521,7 @@ function renderHistory() {
           }
         },
         scales: {
-          x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 0, font: { size: 10 }, color: '#9b9a96',
+          x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 60, font: { size: 10 }, color: '#9b9a96',
             callback: function(v){ const c=this.getLabelForValue(v); const p=v>0?this.getLabelForValue(v-1):null; return c!==p?c:''; } } },
           y: { min: 0, max: 100, grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => v + '%', font: { size: 10 }, color: '#9b9a96' } }
         }
@@ -1765,7 +1765,7 @@ function renderPrices() {
             tooltip: { callbacks: { title: items => trendFullStamp(h[items[0].dataIndex]), label: c => ` ${c.dataset.label}: ${c.raw!=null?'₹'+Number(c.raw).toLocaleString('en-IN'):'no data'}` } }
           },
           scales: {
-            x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 0, font: { size: 10 }, color: '#9b9a96',
+            x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 60, font: { size: 10 }, color: '#9b9a96',
               callback: function(v){ const c=this.getLabelForValue(v); const p=v>0?this.getLabelForValue(v-1):null; return c!==p?c:''; } } },
             y: { grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => '₹'+Number(v).toLocaleString('en-IN'), font: { size: 10 }, color: '#9b9a96' } }
           }
