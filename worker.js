@@ -394,6 +394,25 @@ function priceAgg(arr) {
   };
 }
 
+// Physical size bucket from a product title: Cabin (~≤58cm), Medium (~59–71cm), Large (~≥72cm).
+function sizeOf(name){
+  const n = String(name||'').toLowerCase();
+  const m = n.match(/(\d{2,3})\s*cm/);
+  if (m){ const c=+m[1]; if(c>=40&&c<=58) return 'Cabin'; if(c<=71) return 'Medium'; if(c<=95) return 'Large'; }
+  if (/\blarge\b/.test(n))                return 'Large';
+  if (/\bcabin\b|\bsmall\b/.test(n))      return 'Cabin';
+  if (/\bmedium\b|check[\s-]?in/.test(n)) return 'Medium';
+  return 'Other';
+}
+function sizeBreakdown(skus){
+  const out = {};
+  ['Cabin','Medium','Large','Other'].forEach(sz=>{
+    const ps = (skus||[]).filter(s=>sizeOf(s.name)===sz).map(s=>s.selling).filter(n=>n>0);
+    if (ps.length) out[sz] = { avgPrice: Math.round(ps.reduce((a,v)=>a+v,0)/ps.length), count: ps.length };
+  });
+  return out;
+}
+
 function buildStats(skus) {
   const co={}, br={};
   skus.forEach(sku => {
@@ -411,6 +430,7 @@ function buildStats(skus) {
   })).sort((a,b)=>b.avg-a.avg);
   const brandStats = Object.entries(br).map(([brand,{discs,prices,company,plt,skus}])=>({
     brand,company,...calcStats(discs),...priceAgg(prices),skus,
+    bySize: sizeBreakdown(skus),
     amazon:plt["Amazon"]||0, flipkart:plt["Flipkart"]||0
   })).sort((a,b)=>b.avg-a.avg);
   return {companyStats,brandStats};

@@ -69,6 +69,35 @@ const BRANDS = [
   {brand:"Nasher Miles",       company:"Nasher Miles"},
 ];
 
+// Distinct colour per brand (so VIP's sub-brands show separately, not clubbed).
+const BRAND_COL = {
+  "VIP":"#BA7517","Skybags":"#E39A28","Carlton":"#8A5A12","Aristocrat":"#C79A3F",
+  "Safari":"#0F6E56",
+  "Samsonite":"#185FA5","American Tourister":"#5AA8DD",
+  "HRX":"#D92B6B","Uppercase":"#6B3FA0","Nasher Miles":"#1A7FA8",
+};
+
+// Physical size bucket from a product title: Cabin (~≤58cm), Medium (~59–71cm),
+// Large (~≥72cm). Falls back to keywords; sets/combos & unlabelled → "Other".
+function sizeOf(name){
+  const n = String(name||'').toLowerCase();
+  const m = n.match(/(\d{2,3})\s*cm/);
+  if (m){ const c=+m[1]; if(c>=40&&c<=58) return 'Cabin'; if(c<=71) return 'Medium'; if(c<=95) return 'Large'; }
+  if (/\blarge\b/.test(n))                return 'Large';
+  if (/\bcabin\b|\bsmall\b/.test(n))      return 'Cabin';
+  if (/\bmedium\b|check[\s-]?in/.test(n)) return 'Medium';
+  return 'Other';
+}
+// Average selling price per size bucket for a set of SKUs.
+function sizeBreakdown(skus){
+  const out = {};
+  ['Cabin','Medium','Large','Other'].forEach(sz=>{
+    const ps = (skus||[]).filter(s=>sizeOf(s.name)===sz).map(s=>s.selling).filter(n=>n>0);
+    if (ps.length) out[sz] = { avgPrice: Math.round(ps.reduce((a,v)=>a+v,0)/ps.length), count: ps.length };
+  });
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────────────────────
@@ -558,6 +587,7 @@ function buildStats(skus) {
   })).sort((a,b)=>b.avg-a.avg);
   const brandStats = Object.entries(br).map(([brand,{discs,prices,company,plt,skus}])=>({
     brand,company,...calcStats(discs),...priceAgg(prices),skus,
+    bySize: sizeBreakdown(skus),
     amazon:plt["Amazon"]||0, flipkart:plt["Flipkart"]||0
   })).sort((a,b)=>b.avg-a.avg);
   return {companyStats,brandStats};
@@ -1632,6 +1662,39 @@ function renderPrices() {
   };
   const hasTrend = h.length >= 2;
 
+  // Per-brand price over time (brand-level — VIP's sub-brands kept separate)
+  const snapBrandAvg = (snap, brand) => {
+    const bs = snap.stats && snap.stats.brandStats && snap.stats.brandStats.find(b=>b.brand===brand);
+    if (!bs) return null;
+    if (typeof bs.avgPrice === 'number' && bs.avgPrice > 0) return bs.avgPrice;
+    const ss = bs.skus || [];
+    return ss.length ? Math.round(ss.reduce((a,s)=>a+(s.selling||0),0)/ss.length) : null;
+  };
+  const brandList = BRANDS.map(b=>b.brand);
+
+  // Baseline = earliest snapshot we hold (April isn't available — tracking began later)
+  const baseSnap  = h.length ? h[0] : null;
+  const baseDate  = baseSnap && baseSnap.ts ? new Date(baseSnap.ts) : null;
+  const baseLabel = baseDate ? baseDate.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) : '—';
+
+  // Price CHANGE by brand (latest vs baseline)
+  const changeRows = BRANDS.map(({brand,company})=>{
+    const now  = (curr.brandStats.find(b=>b.brand===brand)||{}).avgPrice ?? null;
+    const base = baseSnap ? snapBrandAvg(baseSnap, brand) : null;
+    const pct  = (now!=null && base) ? +(((now-base)/base)*100).toFixed(1) : null;
+    return { brand, company, base, now, pct };
+  }).filter(r=>r.now!=null);
+
+  // Current average price by brand × size
+  const sizeRows = BRANDS.map(({brand,company})=>{
+    const bstat = curr.brandStats.find(b=>b.brand===brand);
+    const skus = (bstat && bstat.skus) || [];
+    if (!skus.length) return null;
+    const bySz = {};
+    ['Cabin','Medium','Large'].forEach(sz=>{ const ps=skus.filter(s=>sizeOf(s.name)===sz).map(s=>s.selling); if(ps.length) bySz[sz]={avg:Math.round(ps.reduce((a,v)=>a+v,0)/ps.length),n:ps.length}; });
+    return { brand, company, bySz, all: Math.round(skus.reduce((a,s)=>a+(s.selling||0),0)/skus.length), n: skus.length };
+  }).filter(Boolean);
+
   // Top products + prices per brand (shown in marketplace order as scraped)
   const topBlocks = brandRows.filter(b=>b.count>0).map(b => {
     const col = COL[b.company]||'#888', bg = BG[b.company]||'#f7f6f3', txt = TXT[b.company]||'#333';
@@ -1684,37 +1747,66 @@ function renderPrices() {
     </div>
 
     <div style="background:#E6F1FB;border:1px solid #bcd9f5;border-radius:10px;padding:12px 16px;margin-bottom:20px;font-size:12px;color:#0c447c;line-height:1.6">
-      <strong>How to read this:</strong> these are <strong>current live selling prices</strong> pulled from Amazon.in &amp; Flipkart. The
-      <strong>price-over-time</strong> chart below builds up from each refresh you run — it starts from when tracking began, so it is not a
-      backfilled 12-month history. For a true last-1-year price history we would need a historical price-data source (details with your team).
+      <strong>How to read this:</strong> prices are read live from Amazon.in &amp; Flipkart, shown <strong>per brand</strong> (VIP's sub-brands kept separate) and <strong>by size</strong> (cabin / medium / large).
+      "Change" compares the latest scrape with our <strong>earliest tracked date (${baseLabel})</strong> — April isn't available because tracking began later.
+      Each day's average is of the products listed that day (a changing basket, not the identical SKUs), which is why we also split by size; a true same-product index builds as tracking continues.
     </div>
 
-    <!-- Average selling price by company -->
-    <div class="card card-pad" style="margin-bottom:16px">
-      <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:14px">Average Selling Price by Company</div>
-      <div style="position:relative;height:${Math.max(160, companyRows.length*42)}px"><canvas id="price-company-chart"></canvas></div>
-    </div>
-
-    <!-- Average selling price by brand -->
+    <!-- Price change by brand -->
     <div class="card" style="overflow:hidden;margin-bottom:16px">
-      <div style="padding:12px 15px 8px;font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase">Average Selling Price by Brand</div>
+      <div style="padding:12px 15px 8px;font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase">Price Change by Brand <span style="color:#9b9a96;text-transform:none;letter-spacing:0;font-weight:400">· now vs ${baseLabel}</span></div>
       <table style="width:100%">
         <thead><tr style="border-bottom:0.5px solid rgba(26,26,24,0.18);font-size:10px;color:#9b9a96;text-transform:uppercase;letter-spacing:.04em">
           <th style="text-align:left;padding:8px 10px">Brand</th>
-          <th style="text-align:right;padding:8px 10px">Avg Selling</th>
-          <th style="text-align:right;padding:8px 10px">Price Range</th>
-          <th style="text-align:right;padding:8px 10px">SKUs</th>
-          <th style="text-align:right;padding:8px 10px">Amzn/Flpkt</th>
+          <th style="text-align:right;padding:8px 10px">${baseLabel.split(',')[0]}</th>
+          <th style="text-align:right;padding:8px 10px">Now</th>
+          <th style="text-align:right;padding:8px 10px">Change</th>
         </tr></thead>
-        <tbody>${brandTableRows || `<tr><td style="padding:14px;color:#9b9a96">No data</td></tr>`}</tbody>
+        <tbody>${changeRows.map(r=>{
+          const col=BRAND_COL[r.brand]||'#555';
+          const up=r.pct>0; const pc = r.pct==null?'—':`${up?'+':''}${r.pct}%`;
+          const pcol = r.pct==null?'#9b9a96':(up?'#b0445a':'#117a5c');
+          return `<tr style="border-bottom:0.5px solid rgba(26,26,24,0.07)">
+            <td style="padding:8px 10px;font-weight:600"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${col};margin-right:7px"></span>${r.brand}<span style="font-size:10px;color:#9b9a96;font-weight:400"> · ${r.company.split(' ')[0]}</span></td>
+            <td style="padding:8px 10px;text-align:right;color:#5f5e5a">${fmt(r.base)}</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700">${fmt(r.now)}</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700;color:${pcol}">${r.pct!=null?(up?'▲ ':'▼ '):''}${pc}</td>
+          </tr>`;
+        }).join('') || `<tr><td style="padding:14px;color:#9b9a96">No data</td></tr>`}</tbody>
       </table>
+    </div>
+
+    <!-- Average price by brand & size -->
+    <div class="card" style="overflow:hidden;margin-bottom:16px">
+      <div style="padding:12px 15px 8px;font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase">Average Price by Brand &amp; Size <span style="color:#9b9a96;text-transform:none;letter-spacing:0;font-weight:400">· cabin / medium / large</span></div>
+      <table style="width:100%">
+        <thead><tr style="border-bottom:0.5px solid rgba(26,26,24,0.18);font-size:10px;color:#9b9a96;text-transform:uppercase;letter-spacing:.04em">
+          <th style="text-align:left;padding:8px 10px">Brand</th>
+          <th style="text-align:right;padding:8px 10px">Cabin</th>
+          <th style="text-align:right;padding:8px 10px">Medium</th>
+          <th style="text-align:right;padding:8px 10px">Large</th>
+          <th style="text-align:right;padding:8px 10px">All</th>
+        </tr></thead>
+        <tbody>${sizeRows.map(r=>{
+          const col=BRAND_COL[r.brand]||'#555';
+          const cell=sz=> r.bySz[sz] ? `${fmt(r.bySz[sz].avg)}<div style="font-size:9px;color:#b0afa9">${r.bySz[sz].n} items</div>` : '<span style="color:#cfcec9">—</span>';
+          return `<tr style="border-bottom:0.5px solid rgba(26,26,24,0.07)">
+            <td style="padding:8px 10px;font-weight:600"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${col};margin-right:7px"></span>${r.brand}</td>
+            <td style="padding:8px 10px;text-align:right">${cell('Cabin')}</td>
+            <td style="padding:8px 10px;text-align:right">${cell('Medium')}</td>
+            <td style="padding:8px 10px;text-align:right">${cell('Large')}</td>
+            <td style="padding:8px 10px;text-align:right;font-weight:700;color:${col}">${fmt(r.all)}</td>
+          </tr>`;
+        }).join('') || `<tr><td style="padding:14px;color:#9b9a96">No data</td></tr>`}</tbody>
+      </table>
+      <div style="padding:8px 15px 12px;font-size:10px;color:#9b9a96">Size is read from product titles. Set/combo items and titles without a size aren't counted in the size columns, so they can total less than "All".</div>
     </div>
 
     <!-- Price over time -->
     <div class="card card-pad" style="margin-bottom:16px">
-      <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Average Selling Price — Over Time</div>
-      <div style="font-size:11px;color:#9b9a96;margin-bottom:12px">Each point = one refresh. ${hasTrend?'Builds a real price trend as you refresh over days/weeks.':'Run <strong>Refresh Live Data</strong> again (another day) to start the trend — one run is not a trend yet.'}</div>
-      ${hasTrend?`<div style="position:relative;height:260px"><canvas id="price-trend-chart"></canvas></div>`:''}
+      <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Average Selling Price — Over Time, by Brand</div>
+      <div style="font-size:11px;color:#9b9a96;margin-bottom:12px">Each point = one refresh. ${hasTrend?'Every brand shown separately — VIP, Skybags, Carlton &amp; Aristocrat are not clubbed.':'Run <strong>Refresh Live Data</strong> again (another day) to start the trend — one run is not a trend yet.'}</div>
+      ${hasTrend?`<div style="position:relative;height:300px"><canvas id="price-trend-chart"></canvas></div>`:''}
     </div>
 
     <!-- Top products & prices per brand -->
@@ -1725,37 +1817,16 @@ function renderPrices() {
   </div>`;
 
   waitForChart(() => {
-    // Average selling price by company (horizontal bars)
-    mkChart('price-company-chart', {
-      type: 'bar',
-      data: {
-        labels: companyRows.map(r => r.co.split(' ')[0]),
-        datasets: [{
-          data: companyRows.map(r => r.avg),
-          backgroundColor: companyRows.map(r => COL[r.co] || '#888'),
-          borderRadius: 4, borderSkipped: 'left',
-        }]
-      },
-      options: {
-        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ' ₹'+Number(c.raw).toLocaleString('en-IN')+' avg selling price' } } },
-        scales: {
-          x: { grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => '₹'+Number(v).toLocaleString('en-IN'), font: { size: 10 }, color: '#9b9a96' } },
-          y: { grid: { display: false }, ticks: { font: { size: 11 }, color: '#1a1a18' } }
-        }
-      }
-    });
-
     if (hasTrend) {
       mkChart('price-trend-chart', {
         type: 'line',
         data: {
           labels: h.map(trendDateLabel),
-          datasets: COMPANIES.map(co => ({
-            label: co.split(' ')[0],
-            data: h.map(s => snapAvg(s, co)),
-            borderColor: COL[co], backgroundColor: COL[co] + '18',
-            borderWidth: 2, tension: 0.3, pointRadius: 3, spanGaps: true,
+          datasets: brandList.map(br => ({
+            label: br,
+            data: h.map(s => snapBrandAvg(s, br)),
+            borderColor: BRAND_COL[br] || '#888', backgroundColor: (BRAND_COL[br]||'#888') + '14',
+            borderWidth: 2, tension: 0.3, pointRadius: 2, spanGaps: true,
           }))
         },
         options: {
