@@ -1672,6 +1672,92 @@ function renderPrices() {
   };
   const brandList = BRANDS.map(b=>b.brand);
 
+  // ── Brand selection for the "over time" chart ──────────────────────────────
+  // The client asked for a real pick-list: choosing brands should ADD / REMOVE
+  // lines on the chart, not just cross their names out in the legend. Only the
+  // selected brands are drawn; the rest disappear entirely. The choice is
+  // remembered per browser so a curated comparison sticks between visits.
+  if (!Array.isArray(STATE.trendBrands)) {
+    try { const saved = JSON.parse(localStorage.getItem('ldi_trend_brands') || 'null');
+          if (Array.isArray(saved)) STATE.trendBrands = saved; } catch (e) {}
+  }
+  if (!Array.isArray(STATE.trendBrands)) STATE.trendBrands = brandList.slice();   // default: all brands
+  STATE.trendBrands = STATE.trendBrands.filter(b => brandList.includes(b));       // drop any stale names
+  const saveTrendSel = () => { try { localStorage.setItem('ldi_trend_brands', JSON.stringify(STATE.trendBrands)); } catch (e) {} };
+
+  // One chip per brand — coloured + solid when selected, muted when not.
+  function trendMenuChips() {
+    return brandList.map(br => {
+      const on  = STATE.trendBrands.includes(br);
+      const col = BRAND_COL[br] || '#888';
+      return `<button type="button" onclick="toggleTrendBrand('${br.replace(/'/g,"\\'")}')"
+        aria-pressed="${on}" title="${on?'Click to hide':'Click to show'} ${br}"
+        style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+        border:1px solid ${on?col:'#d8d6d1'};background:${on?col+'1f':'#f4f3f0'};
+        color:${on?'#1a1a18':'#a8a7a2'};border-radius:999px;padding:4px 11px;
+        font-size:11px;font-weight:600;line-height:1.3;transition:all .12s">
+        <span style="width:9px;height:9px;border-radius:50%;flex:none;
+          background:${on?col:'#cfcdc8'}"></span>${br}</button>`;
+    }).join('');
+  }
+
+  // (Re)draw the trend chart from the current selection. Zero selected → a
+  // friendly prompt instead of an empty chart.
+  function drawTrendChart() {
+    const wrap = document.getElementById('trend-chart-wrap');
+    if (!wrap) return;
+    const sel = STATE.trendBrands;
+    if (!sel.length) {
+      if (charts['price-trend-chart']) { try { charts['price-trend-chart'].destroy(); } catch (e) {} delete charts['price-trend-chart']; }
+      wrap.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;
+        color:#9b9a96;font-size:13px;text-align:center;padding:0 20px">Pick one or more brands above to compare their price trends.</div>`;
+      return;
+    }
+    if (!document.getElementById('price-trend-chart')) wrap.innerHTML = '<canvas id="price-trend-chart"></canvas>';
+    mkChart('price-trend-chart', {
+      type: 'line',
+      data: {
+        labels: h.map(trendDateLabel),
+        datasets: brandList.filter(br => sel.includes(br)).map(br => ({
+          label: br,
+          data: h.map(s => snapBrandAvg(s, br)),
+          borderColor: BRAND_COL[br] || '#888', backgroundColor: (BRAND_COL[br]||'#888') + '14',
+          borderWidth: 2, tension: 0.3, pointRadius: 2, spanGaps: true,
+        }))
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          // Legend is hidden on purpose — the chips above ARE the legend and the
+          // selector, so there are no crossed-out names left inside the chart.
+          legend: { display: false },
+          tooltip: { callbacks: { title: items => trendFullStamp(h[items[0].dataIndex]), label: c => ` ${c.dataset.label}: ${c.raw!=null?'₹'+Number(c.raw).toLocaleString('en-IN'):'no data'}` } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 60, font: { size: 10 }, color: '#9b9a96',
+            callback: function(v){ const c=this.getLabelForValue(v); const p=v>0?this.getLabelForValue(v-1):null; return c!==p?c:''; } } },
+          y: { grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => '₹'+Number(v).toLocaleString('en-IN'), font: { size: 10 }, color: '#9b9a96' } }
+        }
+      }
+    });
+  }
+
+  // Click handlers (referenced by inline onclick). Defined per-render so they
+  // capture this render's brandList / drawTrendChart closures.
+  const refreshTrendUI = () => {
+    const menu = document.getElementById('trend-brand-menu');
+    if (menu) menu.innerHTML = trendMenuChips();
+    saveTrendSel();
+    drawTrendChart();
+  };
+  window.toggleTrendBrand = (br) => {
+    const i = STATE.trendBrands.indexOf(br);
+    if (i >= 0) STATE.trendBrands.splice(i, 1); else STATE.trendBrands.push(br);
+    refreshTrendUI();
+  };
+  window.trendSelectAll = () => { STATE.trendBrands = brandList.slice(); refreshTrendUI(); };
+  window.trendClear     = () => { STATE.trendBrands = []; refreshTrendUI(); };
+
   // Baseline = earliest snapshot we hold (April isn't available — tracking began later)
   const baseSnap  = h.length ? h[0] : null;
   const baseDate  = baseSnap && baseSnap.ts ? new Date(baseSnap.ts) : null;
@@ -1805,8 +1891,17 @@ function renderPrices() {
     <!-- Price over time -->
     <div class="card card-pad" style="margin-bottom:16px">
       <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Average Selling Price — Over Time, by Brand</div>
-      <div style="font-size:11px;color:#9b9a96;margin-bottom:12px">Each point = one refresh. ${hasTrend?'Every brand shown separately — VIP, Skybags, Carlton &amp; Aristocrat are not clubbed.':'Run <strong>Refresh Live Data</strong> again (another day) to start the trend — one run is not a trend yet.'}</div>
-      ${hasTrend?`<div style="position:relative;height:300px"><canvas id="price-trend-chart"></canvas></div>`:''}
+      <div style="font-size:11px;color:#9b9a96;margin-bottom:12px">Each point = one refresh. ${hasTrend?'Pick the brands you want to compare below — only the ones you choose are drawn.':'Run <strong>Refresh Live Data</strong> again (another day) to start the trend — one run is not a trend yet.'}</div>
+      ${hasTrend?`
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:9px">
+        <div style="font-size:10px;font-weight:700;color:#9b9a96;text-transform:uppercase;letter-spacing:.06em">Compare brands</div>
+        <div style="display:flex;gap:6px">
+          <button type="button" onclick="trendSelectAll()" style="font-size:10px;padding:3px 10px;background:#f0ede8;border:1px solid rgba(26,26,24,0.12);border-radius:6px;cursor:pointer;color:#5f5e5a;font-weight:600">Select all</button>
+          <button type="button" onclick="trendClear()" style="font-size:10px;padding:3px 10px;background:#f0ede8;border:1px solid rgba(26,26,24,0.12);border-radius:6px;cursor:pointer;color:#5f5e5a;font-weight:600">Clear</button>
+        </div>
+      </div>
+      <div id="trend-brand-menu" style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px">${trendMenuChips()}</div>
+      <div id="trend-chart-wrap" style="position:relative;height:300px"><canvas id="price-trend-chart"></canvas></div>`:''}
     </div>
 
     <!-- Top products & prices per brand -->
@@ -1817,32 +1912,7 @@ function renderPrices() {
   </div>`;
 
   waitForChart(() => {
-    if (hasTrend) {
-      mkChart('price-trend-chart', {
-        type: 'line',
-        data: {
-          labels: h.map(trendDateLabel),
-          datasets: brandList.map(br => ({
-            label: br,
-            data: h.map(s => snapBrandAvg(s, br)),
-            borderColor: BRAND_COL[br] || '#888', backgroundColor: (BRAND_COL[br]||'#888') + '14',
-            borderWidth: 2, tension: 0.3, pointRadius: 2, spanGaps: true,
-          }))
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: {
-            legend: { position: 'top', labels: { font: { size: 11 }, usePointStyle: true, boxWidth: 8 } },
-            tooltip: { callbacks: { title: items => trendFullStamp(h[items[0].dataIndex]), label: c => ` ${c.dataset.label}: ${c.raw!=null?'₹'+Number(c.raw).toLocaleString('en-IN'):'no data'}` } }
-          },
-          scales: {
-            x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 60, font: { size: 10 }, color: '#9b9a96',
-              callback: function(v){ const c=this.getLabelForValue(v); const p=v>0?this.getLabelForValue(v-1):null; return c!==p?c:''; } } },
-            y: { grid: { color: 'rgba(26,26,24,0.06)' }, ticks: { callback: v => '₹'+Number(v).toLocaleString('en-IN'), font: { size: 10 }, color: '#9b9a96' } }
-          }
-        }
-      });
-    }
+    if (hasTrend) drawTrendChart();
   });
 }
 
