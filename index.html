@@ -1673,9 +1673,11 @@ function renderPrices() {
   const brandList = BRANDS.map(b=>b.brand);
 
   // ── Brand selection for the "over time" chart ──────────────────────────────
-  // The client asked for a real pick-list: choosing brands should ADD / REMOVE
-  // lines on the chart, not just cross their names out in the legend. Only the
-  // selected brands are drawn; the rest disappear entirely. The choice is
+  // The client asked for a real pick-list, and then for the switched-OFF brands
+  // to disappear from the graph entirely (so a screenshot of a comparison only
+  // ever shows the brands being compared). So the picker lives in a side menu
+  // next to the chart, and ONLY the selected brands are drawn AND labelled —
+  // deselected brands leave no trace on or above the chart. The choice is
   // remembered per browser so a curated comparison sticks between visits.
   if (!Array.isArray(STATE.trendBrands)) {
     try { const saved = JSON.parse(localStorage.getItem('ldi_trend_brands') || 'null');
@@ -1685,19 +1687,21 @@ function renderPrices() {
   STATE.trendBrands = STATE.trendBrands.filter(b => brandList.includes(b));       // drop any stale names
   const saveTrendSel = () => { try { localStorage.setItem('ldi_trend_brands', JSON.stringify(STATE.trendBrands)); } catch (e) {} };
 
-  // One chip per brand — coloured + solid when selected, muted when not.
+  // Side-menu rows — one per brand, coloured when selected, muted when not.
+  // This menu sits BESIDE the chart, so it isn't part of a chart screenshot.
   function trendMenuChips() {
     return brandList.map(br => {
       const on  = STATE.trendBrands.includes(br);
       const col = BRAND_COL[br] || '#888';
       return `<button type="button" onclick="toggleTrendBrand('${br.replace(/'/g,"\\'")}')"
         aria-pressed="${on}" title="${on?'Click to hide':'Click to show'} ${br}"
-        style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;
-        border:1px solid ${on?col:'#d8d6d1'};background:${on?col+'1f':'#f4f3f0'};
-        color:${on?'#1a1a18':'#a8a7a2'};border-radius:999px;padding:4px 11px;
+        style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;cursor:pointer;
+        border:1px solid ${on?col:'#e4e2dd'};background:${on?col+'1f':'#fbfaf8'};
+        color:${on?'#1a1a18':'#a8a7a2'};border-radius:8px;padding:6px 9px;
         font-size:11px;font-weight:600;line-height:1.3;transition:all .12s">
-        <span style="width:9px;height:9px;border-radius:50%;flex:none;
-          background:${on?col:'#cfcdc8'}"></span>${br}</button>`;
+        <span style="width:10px;height:10px;border-radius:50%;flex:none;background:${on?col:'#d4d2cd'}"></span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${br}</span>
+        <span style="flex:none;font-size:11px;color:${on?col:'transparent'}">✓</span></button>`;
     }).join('');
   }
 
@@ -1710,7 +1714,7 @@ function renderPrices() {
     if (!sel.length) {
       if (charts['price-trend-chart']) { try { charts['price-trend-chart'].destroy(); } catch (e) {} delete charts['price-trend-chart']; }
       wrap.innerHTML = `<div style="height:100%;display:flex;align-items:center;justify-content:center;
-        color:#9b9a96;font-size:13px;text-align:center;padding:0 20px">Pick one or more brands above to compare their price trends.</div>`;
+        color:#9b9a96;font-size:13px;text-align:center;padding:0 20px">Pick one or more brands from the menu to compare their price trends.</div>`;
       return;
     }
     if (!document.getElementById('price-trend-chart')) wrap.innerHTML = '<canvas id="price-trend-chart"></canvas>';
@@ -1728,9 +1732,12 @@ function renderPrices() {
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: {
-          // Legend is hidden on purpose — the chips above ARE the legend and the
-          // selector, so there are no crossed-out names left inside the chart.
-          legend: { display: false },
+          // The legend shows ONLY the selected brands (those are the only datasets
+          // we pass), so deselected brands leave no name on the graph. It is made
+          // non-interactive — selection happens in the side menu — so clicking a
+          // name can never strike it through or leave a crossed-out label behind.
+          legend: { display: true, position: 'top', onClick: () => {},
+            labels: { font: { size: 11 }, usePointStyle: true, boxWidth: 8, padding: 14, color: '#5f5e5a' } },
           tooltip: { callbacks: { title: items => trendFullStamp(h[items[0].dataIndex]), label: c => ` ${c.dataset.label}: ${c.raw!=null?'₹'+Number(c.raw).toLocaleString('en-IN'):'no data'}` } }
         },
         scales: {
@@ -1891,17 +1898,21 @@ function renderPrices() {
     <!-- Price over time -->
     <div class="card card-pad" style="margin-bottom:16px">
       <div style="font-size:11px;font-weight:600;color:#5f5e5a;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Average Selling Price — Over Time, by Brand</div>
-      <div style="font-size:11px;color:#9b9a96;margin-bottom:12px">Each point = one refresh. ${hasTrend?'Pick the brands you want to compare below — only the ones you choose are drawn.':'Run <strong>Refresh Live Data</strong> again (another day) to start the trend — one run is not a trend yet.'}</div>
+      <div style="font-size:11px;color:#9b9a96;margin-bottom:14px">Each point = one refresh. ${hasTrend?'Only the brands you switch on in the <strong>Compare brands</strong> menu are drawn &amp; labelled — switched-off brands leave no name on the graph, so a screenshot shows only what you are comparing.':'Run <strong>Refresh Live Data</strong> again (another day) to start the trend — one run is not a trend yet.'}</div>
       ${hasTrend?`
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:9px">
-        <div style="font-size:10px;font-weight:700;color:#9b9a96;text-transform:uppercase;letter-spacing:.06em">Compare brands</div>
-        <div style="display:flex;gap:6px">
-          <button type="button" onclick="trendSelectAll()" style="font-size:10px;padding:3px 10px;background:#f0ede8;border:1px solid rgba(26,26,24,0.12);border-radius:6px;cursor:pointer;color:#5f5e5a;font-weight:600">Select all</button>
-          <button type="button" onclick="trendClear()" style="font-size:10px;padding:3px 10px;background:#f0ede8;border:1px solid rgba(26,26,24,0.12);border-radius:6px;cursor:pointer;color:#5f5e5a;font-weight:600">Clear</button>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:stretch">
+        <div style="flex:1 1 360px;min-width:290px;order:1">
+          <div id="trend-chart-wrap" style="position:relative;height:340px"><canvas id="price-trend-chart"></canvas></div>
         </div>
-      </div>
-      <div id="trend-brand-menu" style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px">${trendMenuChips()}</div>
-      <div id="trend-chart-wrap" style="position:relative;height:300px"><canvas id="price-trend-chart"></canvas></div>`:''}
+        <div style="flex:0 0 184px;min-width:160px;order:2;background:#faf9f6;border:1px solid #efece6;border-radius:10px;padding:11px 12px">
+          <div style="font-size:10px;font-weight:700;color:#8a897f;text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">Compare brands</div>
+          <div style="display:flex;gap:6px;margin-bottom:10px">
+            <button type="button" onclick="trendSelectAll()" style="flex:1;font-size:10px;padding:4px 6px;background:#fff;border:1px solid rgba(26,26,24,0.14);border-radius:6px;cursor:pointer;color:#5f5e5a;font-weight:600">All</button>
+            <button type="button" onclick="trendClear()" style="flex:1;font-size:10px;padding:4px 6px;background:#fff;border:1px solid rgba(26,26,24,0.14);border-radius:6px;cursor:pointer;color:#5f5e5a;font-weight:600">Clear</button>
+          </div>
+          <div id="trend-brand-menu" style="display:flex;flex-direction:column;gap:6px">${trendMenuChips()}</div>
+        </div>
+      </div>`:''}
     </div>
 
     <!-- Top products & prices per brand -->
